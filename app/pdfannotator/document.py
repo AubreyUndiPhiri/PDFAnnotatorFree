@@ -112,6 +112,26 @@ class PDFDocument:
         self.path = target
         self._dirty = False
 
+    @property
+    def metadata(self) -> dict:
+        return dict(self.doc.metadata) if self.doc else {}
+
+    def set_metadata(self, data: dict):
+        self.doc.set_metadata(data)
+        self.snapshot()
+
+    def remove_all_annotations(self):
+        from . import pdf_ops
+        pdf_ops.remove_all_annotations(self.doc)
+        self.snapshot()
+        self.invalidate_page_cache()
+
+    def melt_all_annotations(self):
+        from . import pdf_ops
+        pdf_ops.melt_all_annotations(self.doc)
+        self.snapshot()
+        self.invalidate_page_cache()
+
     def close(self):
         if self.doc:
             self.doc.close()

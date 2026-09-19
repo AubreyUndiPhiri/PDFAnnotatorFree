@@ -6,6 +6,18 @@ from PySide6.QtCore import Qt, QPoint, QRect
 from . import pdf_ops
 from .tools import Tool
 
+# Tools that collect a freehand point path while the mouse is dragging
+PATH_TOOLS = {Tool.INK, Tool.MARKER, Tool.ERASER, Tool.LASSO}
+
+# Tools drawn as a simple rubber-band rectangle/line while dragging, committed
+# as a single (p1, p2) pair on release
+RUBBERBAND_TOOLS = {
+    Tool.RECT, Tool.ELLIPSE, Tool.LINE, Tool.ARROW, Tool.TEXTBOX, Tool.STAMP,
+    Tool.IMAGE_STAMP, Tool.HIGHLIGHT, Tool.UNDERLINE, Tool.STRIKEOUT,
+    Tool.DIMENSION, Tool.SNAPSHOT, Tool.CROP, Tool.MEASURE, Tool.EXTRACT_TEXT,
+    Tool.FORMULA,
+}
+
 
 class PageWidget(QWidget):
     """Renders one PDF page and handles all mouse interaction for annotation tools."""
@@ -22,7 +34,13 @@ class PageWidget(QWidget):
         self._dragging = False
         self._drag_start = None
         self._drag_current = None
-        self._ink_points = []
+        self._path_points = []
+
+        self._polygon_points_px = []
+        self._polygon_rubber_px = None
+
+        self._pan_last_pos = None
+        self._flash_rect = None
 
         self.ensure_placeholder()
 
@@ -46,7 +64,7 @@ class PageWidget(QWidget):
     def render(self):
         page = self.page()
         mat = pdf_ops.render_matrix(self.zoom())
-        pix = page.get_pixmap(matrix=mat, alpha=False)
+        pix = page.get_pixmap(matrix=mat, alpha=False, annots=not self.controller.hide_annotations)
         img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888).copy()
         self.pixmap = QPixmap.fromImage(img)
         self.setFixedSize(self.pixmap.size())
@@ -67,32 +85,54 @@ class PageWidget(QWidget):
             painter.setPen(QColor(160, 160, 160))
             painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
 
-        sel = self.controller.selected
-        if sel is not None and sel[0] == self.page_index and self.rendered:
-            _, annot = sel
+        if self.rendered:
+            for sel_page, annot in self.controller.selected:
+                if sel_page != self.page_index:
+                    continue
+                try:
+                    r = fitz.Rect(annot.rect) * pdf_ops.coord_matrix(self.page(), self.zoom())
+                    r = r.normalize()
+                    offset = QPoint(0, 0)
+                    if self.controller.select_dragging:
+                        offset = self.controller.select_offset_px
+                    pen = QPen(QColor(0, 120, 255), 2, Qt.DashLine)
+                    painter.setPen(pen)
+                    painter.drawRect(int(r.x0) + offset.x(), int(r.y0) + offset.y(),
+                                      max(1, int(r.width)), max(1, int(r.height)))
+                except Exception:
+                    pass
+
+        if self._flash_rect is not None and self.rendered:
             try:
-                r = fitz.Rect(annot.rect) * pdf_ops.coord_matrix(self.page(), self.zoom())
+                r = fitz.Rect(self._flash_rect) * pdf_ops.coord_matrix(self.page(), self.zoom())
                 r = r.normalize()
-                offset = QPoint(0, 0)
-                if self.controller.select_dragging:
-                    offset = self.controller.select_offset_px
-                pen = QPen(QColor(0, 120, 255), 2, Qt.DashLine)
+                pen = QPen(QColor(255, 200, 0), 3)
                 painter.setPen(pen)
-                painter.drawRect(int(r.x0) + offset.x(), int(r.y0) + offset.y(),
-                                  max(1, int(r.width)), max(1, int(r.height)))
+                painter.drawRect(int(r.x0), int(r.y0), max(1, int(r.width)), max(1, int(r.height)))
             except Exception:
                 pass
+
+        if self._polygon_points_px and self.rendered:
+            pen = QPen(self.controller.current_color, max(1, int(self.controller.current_width)))
+            painter.setPen(pen)
+            pts = self._polygon_points_px
+            for i in range(1, len(pts)):
+                painter.drawLine(pts[i - 1], pts[i])
+            if self._polygon_rubber_px is not None:
+                painter.drawLine(pts[-1], self._polygon_rubber_px)
+            for p in pts:
+                painter.drawEllipse(p, 2, 2)
 
         if self._dragging and self.rendered:
             pen = QPen(self.controller.current_color, max(1, int(self.controller.current_width)))
             painter.setPen(pen)
             tool = self.controller.current_tool
-            if tool == Tool.INK and len(self._ink_points) > 1:
-                for i in range(1, len(self._ink_points)):
-                    painter.drawLine(self._ink_points[i - 1], self._ink_points[i])
+            if tool in PATH_TOOLS and len(self._path_points) > 1:
+                for i in range(1, len(self._path_points)):
+                    painter.drawLine(self._path_points[i - 1], self._path_points[i])
             elif self._drag_start and self._drag_current:
                 r = QRect(self._drag_start, self._drag_current).normalized()
-                if tool in (Tool.LINE, Tool.ARROW):
+                if tool in (Tool.LINE, Tool.ARROW, Tool.DIMENSION):
                     painter.drawLine(self._drag_start, self._drag_current)
                 elif tool == Tool.ELLIPSE:
                     painter.drawEllipse(r)
@@ -107,42 +147,119 @@ class PageWidget(QWidget):
     def _event_pos(event) -> QPoint:
         return event.position().toPoint() if hasattr(event, "position") else event.pos()
 
+    # ---------------------------------------------------------------
+    # Mouse handling
+    # ---------------------------------------------------------------
+
     def mousePressEvent(self, event):
-        if not self.rendered or event.button() != Qt.LeftButton:
+        if not self.rendered or event.button() not in (Qt.LeftButton, Qt.RightButton):
             return
         self.setFocus()
         tool = self.controller.current_tool
         pos = self._event_pos(event)
 
+        if event.button() == Qt.RightButton:
+            if tool == Tool.ZOOM:
+                self.controller.zoom_click(self, pos, zoom_in=False)
+            return
+
         if tool == Tool.SELECT:
-            self.controller.begin_select_drag(self, pos)
+            additive = bool(event.modifiers() & Qt.ControlModifier)
+            self.controller.begin_select_drag(self, pos, additive)
             return
 
         if tool == Tool.NOTE:
             self.controller.place_note(self, pos)
             return
 
+        if tool == Tool.ZOOM:
+            self.controller.zoom_click(self, pos, zoom_in=True)
+            return
+
+        if tool == Tool.POINTER:
+            self.controller.inspect_annot(self, pos)
+            return
+
+        if tool == Tool.PAN:
+            self._pan_last_pos = pos
+            return
+
+        if tool == Tool.POLYGON:
+            self._polygon_points_px.append(pos)
+            self._polygon_rubber_px = pos
+            self.update()
+            return
+
         self._dragging = True
         self._drag_start = pos
         self._drag_current = pos
-        if tool == Tool.INK:
-            self._ink_points = [pos]
+        if tool in PATH_TOOLS:
+            self._path_points = [pos]
         self.update()
 
     def mouseMoveEvent(self, event):
         pos = self._event_pos(event)
         tool = self.controller.current_tool
 
+        if tool == Tool.LASER_POINTER:
+            self.controller.update_laser_pointer(self, pos)
+
         if tool == Tool.SELECT:
             self.controller.update_select_drag(self, pos)
+            return
+
+        if tool == Tool.POLYGON:
+            if self._polygon_points_px:
+                self._polygon_rubber_px = pos
+                self.update()
+            return
+
+        if tool == Tool.PAN:
+            if self._pan_last_pos is not None and (event.buttons() & Qt.LeftButton):
+                delta = pos - self._pan_last_pos
+                self.controller.pan_scroll(delta.x(), delta.y())
+                self._pan_last_pos = pos
             return
 
         if not self._dragging:
             return
         self._drag_current = pos
-        if tool == Tool.INK:
-            self._ink_points.append(pos)
+        if tool in PATH_TOOLS:
+            self._path_points.append(pos)
+        if tool == Tool.MEASURE:
+            p1 = self.to_pdf_point(self._drag_start)
+            p2 = self.to_pdf_point(pos)
+            self.controller.update_measure(self, p1, p2)
         self.update()
+
+    def leaveEvent(self, event):
+        if self.controller.current_tool == Tool.LASER_POINTER:
+            self.controller.hide_laser_pointer()
+        super().leaveEvent(event)
+
+    def keyPressEvent(self, event):
+        if self.controller.current_tool == Tool.POLYGON and self._polygon_points_px:
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                self._finish_polygon()
+                return
+            if event.key() == Qt.Key_Escape:
+                self._polygon_points_px = []
+                self._polygon_rubber_px = None
+                self.update()
+                return
+        super().keyPressEvent(event)
+
+    def _finish_polygon(self):
+        if len(self._polygon_points_px) < 3:
+            self._polygon_points_px = []
+            self._polygon_rubber_px = None
+            self.update()
+            return
+        pts = [self.to_pdf_point(p) for p in self._polygon_points_px]
+        self._polygon_points_px = []
+        self._polygon_rubber_px = None
+        self.update()
+        self.controller.commit_polygon(self, pts)
 
     def mouseReleaseEvent(self, event):
         pos = self._event_pos(event)
@@ -152,33 +269,59 @@ class PageWidget(QWidget):
             self.controller.end_select_drag(self, pos)
             return
 
+        if tool == Tool.PAN:
+            self._pan_last_pos = None
+            return
+
         if not self._dragging:
             return
         self._dragging = False
         start, end = self._drag_start, pos
         self._drag_start = None
         self._drag_current = None
-        ink_points = self._ink_points
-        self._ink_points = []
+        path_points = self._path_points
+        self._path_points = []
         self.update()
 
-        if tool == Tool.INK:
-            if len(ink_points) < 2:
+        if tool in PATH_TOOLS:
+            if len(path_points) < 2:
                 return
-            pts = [self.to_pdf_point(p) for p in ink_points]
-            self.controller.commit_ink(self, pts)
+            pts = [self.to_pdf_point(p) for p in path_points]
+            if tool == Tool.INK:
+                self.controller.commit_ink(self, pts)
+            elif tool == Tool.MARKER:
+                self.controller.commit_marker(self, pts)
+            elif tool == Tool.ERASER:
+                self.controller.commit_eraser(self, pts)
+            elif tool == Tool.LASSO:
+                self.controller.commit_lasso(self, pts)
             return
 
         if (start - end).manhattanLength() < 3 and tool not in (
-            Tool.TEXTBOX, Tool.STAMP, Tool.IMAGE_STAMP,
+            Tool.TEXTBOX, Tool.STAMP, Tool.IMAGE_STAMP, Tool.FORMULA,
         ):
             return
 
         p1 = self.to_pdf_point(start)
         p2 = self.to_pdf_point(end)
-        self.controller.commit_drag_tool(self, tool, p1, p2)
+
+        if tool == Tool.DIMENSION:
+            self.controller.commit_dimension(self, p1, p2)
+        elif tool == Tool.SNAPSHOT:
+            self.controller.commit_snapshot(self, p1, p2)
+        elif tool == Tool.CROP:
+            self.controller.commit_crop(self, p1, p2)
+        elif tool == Tool.EXTRACT_TEXT:
+            self.controller.commit_extract_text(self, p1, p2)
+        elif tool == Tool.MEASURE:
+            pass  # live readout only, nothing committed
+        else:
+            self.controller.commit_drag_tool(self, tool, p1, p2)
 
     def mouseDoubleClickEvent(self, event):
         pos = self._event_pos(event)
-        if self.controller.current_tool == Tool.SELECT:
+        tool = self.controller.current_tool
+        if tool == Tool.SELECT:
             self.controller.try_edit_annot_text(self, pos)
+        elif tool == Tool.POLYGON:
+            self._finish_polygon()
