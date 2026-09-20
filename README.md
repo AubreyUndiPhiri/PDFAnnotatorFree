@@ -10,6 +10,8 @@ viewer.
 
 ```
 venv\Scripts\python.exe app\main.py
+
+https://github.com/AubreyUndiPhiri/PDFAnnotatorFree/releases/download/v2.0.0/PDFAnnotatorFree-v2.0.0-win64.zip
 ```
 
 ## Run the automated smoke test
