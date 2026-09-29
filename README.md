@@ -123,13 +123,22 @@ Single-letter shortcuts are shown in brackets.
 
 ## Fonts (including your AUPedean handwriting font)
 
-The toolbar **Font** box and **Tools > Tool Styles** list, in this order:
+The toolbar **Font** box and **Tools > Tool Styles** list, in labelled sections:
 
 1. **Your handwriting fonts** (such as AUPedean), from `app/assets/fonts/` and
    `%APPDATA%\AupedianAnnotators\fonts\`.
 2. **Helvetica, Times, Courier**: the standard PDF fonts, saved as plain
    text annotations.
-3. **Every font installed in Windows** that allows embedding (about 600 on a
+3. **84 bundled font families (209 styles)** that ship with the app, so they
+   work on every PC: handwriting and script (Caveat, Dancing Script, Great
+   Vibes, Pacifico, Permanent Marker...), sans serif (Roboto, Open Sans, Lato,
+   Montserrat, Poppins, Inter...), serif (Merriweather, Lora, Playfair
+   Display, EB Garamond...), monospace (JetBrains Mono, Fira Code, Source
+   Code Pro...) and display (Bebas Neue, Lobster, Abril Fatface...). They are
+   open-licence Google Fonts; see `app/assets/fonts/library/README.md` for
+   the full list and licences, and run `python toolsetch_fonts.py` to
+   refresh them.
+4. **Every font installed in Windows** that allows embedding (about 600 on a
    typical PC, including the Bold and Italic styles, and handwriting-style
    fonts such as Ink Free, Segoe Print and Segoe Script). Fonts whose licence
    forbids embedding, symbol fonts and very large fonts (over 15 MB) are left

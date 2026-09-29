@@ -281,3 +281,20 @@ def test_drag_sets_wrap_width_and_toolbar_restyles_live(app, tmp_path):
     assert pdf_ops.freetext_style(box)["fontsize"] == 20
     assert box.rect.height > 2 * 20
     win.close()
+
+
+def test_bundled_font_library(app):
+    fonts.register_custom_fonts()
+    lib = fonts.library_fonts()
+    assert len(lib) >= 150, len(lib)
+    for name in ("Roboto", "Roboto Bold", "Lora Italic", "Caveat", "Dancing Script", "Bebas Neue", "JetBrains Mono"):
+        assert name in lib, name
+        assert fonts.custom_font_path(name).endswith(".ttf")
+    # every family ships with its licence
+    for family in fonts.LIBRARY_DIR.glob("*/*"):
+        assert any(family.glob("*.txt")), f"no licence file in {family}"
+    # a bundled font embeds and round-trips like any other
+    doc = fitz.open()
+    page = doc.new_page()
+    annot = pdf_ops.add_text_box(page, fitz.Point(40, 40), "Bundled font check", QColor("black"), 18, "Caveat")
+    assert pdf_ops.freetext_style(annot)["fontname"] == "Caveat"
