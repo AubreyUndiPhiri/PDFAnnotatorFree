@@ -151,9 +151,9 @@ QStatusBar::item {{ border: none; }}
 QLabel#dialogTitle {{ font-size: 12pt; font-weight: 600; }}
 QLabel#muted {{ color: {TEXT_MUTED}; }}
 
-/* ---- floating in-page text editor */
-QFrame#floatingEditor {{ background: {SURFACE}; border: 1px solid {BORDER_STRONG}; border-radius: 10px; }}
-QFrame#floatingEditor QTextEdit {{ border: 1px solid {BORDER}; }}
+/* ---- on-page text box while typing */
+QTextEdit#inlineText {{ background: transparent; border: 1px dashed {ACCENT}; border-radius: 0; padding: 0;
+    selection-background-color: {ACCENT_SOFT_BORDER}; selection-color: {TEXT}; }}
 """
 
 

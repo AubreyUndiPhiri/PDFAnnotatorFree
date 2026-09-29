@@ -1,3 +1,4 @@
+import math
 import os
 import fitz
 
@@ -6,15 +7,16 @@ from PySide6.QtWidgets import (
     QInputDialog,
 )
 from PySide6.QtGui import QGuiApplication, QImage, QPixmap, QPainter, QColor
-from PySide6.QtCore import Qt, QPoint, QTimer
+from PySide6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer
 
 from .document import PDFDocument
 from .page_widget import PageWidget
 from .thumbnail_panel import ThumbnailPanel
 from .guide_overlay import GuideLine, LaserDot
-from .dialogs import AdvancedTextEditorDialog
+from .inline_text import InlineTextEditor
+from . import handles
 from .tools import Tool, TOOL_HINTS, UNITS
-from . import pdf_ops, theme
+from . import fonts, pdf_ops, theme
 
 
 class PageCanvas(QWidget):
@@ -55,6 +57,10 @@ class DocumentTab(QWidget):
         self.page_widgets = []
         self.page_layout_mode = "continuous"  # or "single"
         self.current_single_page_index = 0
+
+        self.text_edit = None      # active in-page text editor state (see begin_text_edit)
+        self.resize_state = None   # active handle drag on the selected annotation
+        self.resize_preview_px = None
 
         self.unit_index = 0  # into tools.UNITS
         self.hide_annotations = False
@@ -173,6 +179,7 @@ class DocumentTab(QWidget):
     # ---------------------------------------------------------------
 
     def undo(self):
+        self.finish_text_editing()
         if not self.document.can_undo():
             return
         self.document.undo()
@@ -180,6 +187,7 @@ class DocumentTab(QWidget):
         self.rebuild_viewer()
 
     def redo(self):
+        self.finish_text_editing()
         if not self.document.can_redo():
             return
         self.document.redo()
@@ -191,6 +199,7 @@ class DocumentTab(QWidget):
     # ---------------------------------------------------------------
 
     def rebuild_viewer(self):
+        self._discard_text_editing()
         self.document.invalidate_page_cache()
         while self.pages_layout.count():
             item = self.pages_layout.takeAt(0)
@@ -300,6 +309,7 @@ class DocumentTab(QWidget):
     # ---------------------------------------------------------------
 
     def set_zoom(self, zoom, anchor_widget=None, anchor_pixel=None):
+        self.finish_text_editing()
         zoom = max(0.2, min(zoom, 6.0))
         if abs(zoom - self.zoom) < 1e-6:
             return
@@ -660,21 +670,6 @@ class DocumentTab(QWidget):
         info = annot.info
         self.set_hint(f"{annot.type[1]} — {info.get('content', '') or '(no content)'}")
 
-    def commit_inline_text(self, widget, anchor_pdf_point, text, color, fontsize, tool):
-        if not text or not text.strip():
-            return
-        page = widget.page()
-        default_w, default_h = (180, 44) if tool == Tool.FORMULA else (180, 42)
-        rect = fitz.Rect(anchor_pdf_point.x, anchor_pdf_point.y, anchor_pdf_point.x + default_w, anchor_pdf_point.y + default_h)
-        pdf_ops.add_freetext(page, rect, text, color, fontsize, self.current_fontname)
-        self.window.set_tool(Tool.SELECT)
-        if widget.floating_text_editor is not None:
-            widget.floating_text_editor.close()
-            widget.floating_text_editor = None
-        self.document.snapshot()
-        widget.render()
-        self.refresh_thumbnail(widget.page_index)
-
     def commit_drag_tool(self, widget, tool, p1, p2):
         page = widget.page()
         rect = fitz.Rect(p1, p2)
@@ -700,39 +695,6 @@ class DocumentTab(QWidget):
                 pdf_ops.add_line(page, p1, p2, self.current_color, self.current_width, arrow=False)
             elif tool == Tool.ARROW:
                 pdf_ops.add_line(page, p1, p2, self.current_color, self.current_width, arrow=True)
-            elif tool == Tool.TEXTBOX:
-                editor = AdvancedTextEditorDialog(
-                    initial_text="",
-                    initial_color=self.current_color,
-                    initial_fontsize=self.current_fontsize,
-                    initial_fontname=self.current_fontname,
-                    parent=self,
-                )
-                if editor.exec() != editor.Accepted:
-                    return
-                text = editor.text_value()
-                if not text.strip():
-                    return
-                pdf_ops.add_freetext(page, rect, text, editor.selected_color(), editor.selected_fontsize(),
-                                     editor.selected_fontname(), editor.selected_alignment())
-                self.window.set_tool(Tool.SELECT)
-            elif tool == Tool.FORMULA:
-                editor = AdvancedTextEditorDialog(
-                    initial_text="",
-                    initial_color=self.current_color,
-                    initial_fontsize=max(self.current_fontsize, 14),
-                    initial_fontname=self.current_fontname,
-                    parent=self,
-                )
-                editor.setWindowTitle("Formula")
-                if editor.exec() != editor.Accepted:
-                    return
-                text = editor.text_value()
-                if not text.strip():
-                    return
-                pdf_ops.add_freetext(page, rect, text, editor.selected_color(), editor.selected_fontsize(),
-                                     editor.selected_fontname(), editor.selected_alignment())
-                self.window.set_tool(Tool.SELECT)
             elif tool == Tool.STAMP:
                 pdf_ops.add_stamp(page, rect, self.current_stamp_name)
                 self.window.set_tool(Tool.SELECT)
@@ -764,30 +726,200 @@ class DocumentTab(QWidget):
         self.refresh_thumbnail(widget.page_index)
 
     def try_edit_annot_text(self, widget, pos):
+        """Double-click: edit a text box in place, or a sticky note's comment."""
         page = widget.page()
-        pdf_pt = widget.to_pdf_point(pos)
-        annot = pdf_ops.find_annot_at(page, pdf_pt)
+        annot = pdf_ops.find_annot_at(page, widget.to_pdf_point(pos))
         if annot is None:
             return
-        if annot.type[0] not in (fitz.PDF_ANNOT_FREETEXT, fitz.PDF_ANNOT_TEXT):
+        if pdf_ops.is_text_box(annot):
+            self.begin_text_edit(widget, annot=annot)
             return
-        old_text = annot.info.get("content", "")
-        editor = AdvancedTextEditorDialog(
-            initial_text=old_text,
-            initial_color=self.current_color,
-            initial_fontsize=max(int(getattr(annot, "fontsize", self.current_fontsize) or self.current_fontsize), 10),
-            parent=self,
-        )
-        editor.setWindowTitle("Edit Text")
-        if editor.exec() != editor.Accepted:
+        if annot.type[0] != fitz.PDF_ANNOT_TEXT:
             return
-        text = editor.text_value()
+        text, ok = QInputDialog.getMultiLineText(self, "Edit Note", "Comment:", annot.info.get("content", ""))
+        if not ok:
+            return
         annot.set_info(content=text)
-        annot.set_colors(stroke=pdf_ops.color_to_rgb(editor.selected_color()))
         annot.update()
         self.document.snapshot()
         widget.render()
         self.refresh_thumbnail(widget.page_index)
+
+    # ---------------------------------------------------------------
+    # In-place text editing (Text / Formula tools, double-click a box)
+    # ---------------------------------------------------------------
+
+    TEXT_TOOLS = (Tool.TEXTBOX, Tool.FORMULA)
+
+    def px_per_pt(self, widget):
+        m = pdf_ops.coord_matrix(widget.page(), self.zoom)
+        return math.hypot(m.a, m.b)
+
+    def pdf_to_px(self, widget, point):
+        p = fitz.Point(point) * pdf_ops.coord_matrix(widget.page(), self.zoom)
+        return QPointF(p.x, p.y)
+
+    def begin_text_edit(self, widget, origin_pdf=None, width_pt=None, annot=None):
+        """Open the on-page editor: a new box at `origin_pdf` (wrapping at
+        `width_pt` if the box was dragged out), or the existing box `annot`."""
+        self.finish_text_editing()
+        text, align, flags, original = "", 0, None, None
+        if annot is not None:
+            style = pdf_ops.freetext_style(annot)
+            origin_pdf = fitz.Point(annot.rect.x0, annot.rect.y0)
+            width_pt = annot.rect.width if style["fixed_width"] else None
+            text, align = style["text"], style["align"]
+            if self.current_tool not in self.TEXT_TOOLS:
+                self.window.set_tool(Tool.TEXTBOX)
+            # The toolbar shows, and live-edits, the style of the box being edited
+            tool_style = self.window.tool_styles[self.current_tool]
+            if style["fontname"] in fonts.available_fonts():
+                tool_style["fontname"] = style["fontname"]
+            tool_style["fontsize"] = int(round(style["fontsize"]))
+            tool_style["color"] = tuple(round(c * 255) for c in style["color"])
+            self.window._refresh_style_controls()
+            original = (text, tool_style["fontname"], float(tool_style["fontsize"]), QColor.fromRgbF(*style["color"]).name())
+            # Hide the saved box while its live copy is being edited
+            flags = annot.flags
+            self.document.doc.xref_set_key(annot.xref, "F", str(flags | fitz.PDF_ANNOT_IS_HIDDEN))
+            widget.render()
+
+        scale = self.px_per_pt(widget)
+        origin_px = self.pdf_to_px(widget, origin_pdf)
+        editor = InlineTextEditor(
+            widget, QPoint(round(origin_px.x()), round(origin_px.y())), scale,
+            self.current_fontname, self.current_fontsize, self.current_color,
+            fixed_width_px=width_pt * scale if width_pt else None, text=text,
+        )
+        editor.finished.connect(self.finish_text_editing)
+        editor.show()
+        editor.setFocus()
+        self.text_edit = {"widget": widget, "editor": editor, "origin": fitz.Point(origin_pdf), "width": width_pt,
+                          "annot": annot, "align": align, "flags": flags, "original": original}
+        self.set_hint("Type your text. Press Esc or click outside the box to finish.")
+
+    def update_text_edit_style(self):
+        """Toolbar font/size/colour changed: restyle the box being typed in."""
+        if self.text_edit is None:
+            return
+        editor = self.text_edit["editor"]
+        editor.set_style(self.current_fontname, self.current_fontsize, self.current_color)
+        editor.setFocus()
+
+    def finish_text_editing(self):
+        """Write the on-page editor's text into the PDF, then select the box
+        so it can be moved or resized straight away. Returns the annotation."""
+        state, self.text_edit = self.text_edit, None
+        if state is None:
+            return None
+        editor, widget, annot = state["editor"], state["widget"], state["annot"]
+        text = editor.toPlainText().rstrip()
+        fontname, fontsize, color = editor.fontname, editor.fontsize, editor.color
+        editor.hide()
+        editor.deleteLater()
+        page = widget.page()
+        if annot is not None:
+            self.document.doc.xref_set_key(annot.xref, "F", str(state["flags"]))
+
+        changed = True
+        try:
+            if annot is not None and not text.strip():
+                page.delete_annot(annot)
+                annot = None
+            elif annot is not None:
+                if state["original"] == (text, fontname, fontsize, color.name()):
+                    changed = False
+                else:
+                    w, h = pdf_ops.text_box_size(text, fontsize, fontname, state["width"])
+                    o = state["origin"]
+                    pdf_ops.set_freetext(annot, text, color, fontsize, fontname,
+                                         fitz.Rect(o.x, o.y, o.x + w, o.y + h), align=state["align"])
+            elif text.strip():
+                annot = pdf_ops.add_text_box(page, state["origin"], text, color, fontsize, fontname,
+                                             width=state["width"])
+            else:
+                widget.render()
+                self.set_hint(TOOL_HINTS.get(self.current_tool, ""))
+                return None  # empty new box: nothing to add, keep the Text tool
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not save the text:\n{e}")
+            widget.render()
+            return None
+
+        if changed:
+            self.document.snapshot()
+            self.refresh_thumbnail(widget.page_index)
+        widget.render()
+        self.window.set_tool(Tool.SELECT)
+        if annot is not None:
+            self.selected = [(widget.page_index, annot)]
+            widget.update()
+        return annot
+
+    def _discard_text_editing(self):
+        """Drop the editor without writing (the page widgets are about to be
+        rebuilt, e.g. after undo or a page change)."""
+        state, self.text_edit = self.text_edit, None
+        if state is None:
+            return
+        state["editor"].hide()
+        state["editor"].deleteLater()
+        if state["annot"] is not None:
+            try:
+                self.document.doc.xref_set_key(state["annot"].xref, "F", str(state["flags"]))
+            except Exception:
+                pass
+
+    # ---------------------------------------------------------------
+    # Selection frame, resize handles, cursors
+    # ---------------------------------------------------------------
+
+    def annot_rect_px(self, widget, annot) -> QRectF:
+        r = (fitz.Rect(annot.rect) * pdf_ops.coord_matrix(widget.page(), self.zoom)).normalize()
+        return QRectF(r.x0, r.y0, r.width, r.height)
+
+    def single_selection(self, widget):
+        if len(self.selected) == 1 and self.selected[0][0] == widget.page_index:
+            return self.selected[0][1]
+        return None
+
+    def selection_frame(self, widget):
+        """(rect_px, show_handles) for the single selected annotation on this
+        page, following any in-progress move or resize; None otherwise."""
+        annot = self.single_selection(widget)
+        if annot is None:
+            return None
+        if self.resize_state is not None and self.resize_preview_px is not None:
+            return self.resize_preview_px, True
+        rect = self.annot_rect_px(widget, annot)
+        if self.select_dragging:
+            rect.translate(self.select_offset_px.x(), self.select_offset_px.y())
+        return rect, pdf_ops.is_resizable(annot)
+
+    def handle_under(self, widget, pos):
+        annot = self.single_selection(widget)
+        if annot is None or not pdf_ops.is_resizable(annot):
+            return None
+        return handles.handle_at(self.annot_rect_px(widget, annot), pos)
+
+    def hover_cursor(self, widget, pos):
+        handle = self.handle_under(widget, pos)
+        if handle:
+            return handles.CURSORS[handle]
+        if pdf_ops.find_annot_at(widget.page(), widget.to_pdf_point(pos)) is not None:
+            return Qt.SizeAllCursor
+        return Qt.ArrowCursor
+
+    def nudge_selected(self, widget, dx, dy):
+        moved = False
+        for page_index, annot in self.selected:
+            if page_index == widget.page_index:
+                pdf_ops.move_annot(annot, dx, dy)
+                moved = True
+        if moved:
+            self.document.snapshot()
+            widget.render()
+            self.refresh_thumbnail(widget.page_index)
 
     def delete_selected(self):
         if not self.selected:
@@ -811,6 +943,12 @@ class DocumentTab(QWidget):
     # ---------------------------------------------------------------
 
     def begin_select_drag(self, widget, pos, additive=False):
+        handle = None if additive else self.handle_under(widget, pos)
+        if handle:
+            start = self.annot_rect_px(widget, self.selected[0][1])
+            self.resize_state = {"handle": handle, "start": start}
+            self.resize_preview_px = QRectF(start)
+            return
         page = widget.page()
         pdf_pt = widget.to_pdf_point(pos)
         annot = pdf_ops.find_annot_at(page, pdf_pt)
@@ -837,12 +975,32 @@ class DocumentTab(QWidget):
         widget.update()
 
     def update_select_drag(self, widget, pos):
+        if self.resize_state is not None:
+            self.resize_preview_px = handles.resized(self.resize_state["start"], self.resize_state["handle"], pos)
+            widget.update()
+            return
         if not self.select_dragging or not self.selected:
             return
         self.select_offset_px = pos - self._select_start_px
         widget.update()
 
     def end_select_drag(self, widget, pos):
+        if self.resize_state is not None:
+            rect_px = self.resize_preview_px
+            start = self.resize_state["start"]
+            self.resize_state = None
+            self.resize_preview_px = None
+            annot = self.single_selection(widget)
+            if annot is None or rect_px is None or rect_px == start:
+                widget.update()
+                return
+            tl = widget.to_pdf_point(QPoint(round(rect_px.left()), round(rect_px.top())))
+            br = widget.to_pdf_point(QPoint(round(rect_px.right()), round(rect_px.bottom())))
+            pdf_ops.resize_annot(annot, fitz.Rect(tl, br))
+            self.document.snapshot()
+            widget.render()
+            self.refresh_thumbnail(widget.page_index)
+            return
         if not self.select_dragging or not self.selected:
             self.select_dragging = False
             return

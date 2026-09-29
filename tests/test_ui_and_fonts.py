@@ -101,33 +101,181 @@ def _make_test_font(path: Path):
     fb.save(str(path))
 
 
-def test_custom_font_is_listed_and_embedded(app, tmp_path, monkeypatch):
+@pytest.fixture
+def test_font(tmp_path, monkeypatch):
     font_dir = tmp_path / "fonts"
     font_dir.mkdir()
     _make_test_font(font_dir / "TestHand.ttf")
     monkeypatch.setattr(fonts, "FONTS_DIR", font_dir)
     monkeypatch.setattr(fonts, "_custom_fonts", {})
-
     fonts.register_custom_fonts()
-    assert "TestHand" in fonts.available_fonts()
-    assert fonts.is_custom_font("TestHand")
+    return "TestHand"
 
+
+def _appearance_fonts(doc, annot):
+    kind, ap = doc.xref_get_key(annot.xref, "AP/N")
+    assert kind == "xref"
+    return doc.xref_get_key(int(ap.split()[0]), "Resources/Font")[1]
+
+
+def test_custom_font_text_is_a_movable_annotation(app, tmp_path, test_font):
+    assert test_font in fonts.available_fonts()
     doc = fitz.open()
     page = doc.new_page()
-    result = pdf_ops.add_freetext(page, fitz.Rect(50, 50, 60, 60), "HELLO WORLD\nSECOND LINE", QColor("black"), 14, "TestHand")
-    assert result is None  # drawn into the page, not an annotation
+    annot = pdf_ops.add_text_box(page, fitz.Point(50, 50), "HELLO WORLD\nSECOND LINE", QColor("black"), 14, test_font)
+    assert annot.type[1] == "FreeText"
+    assert "F-TestHand" in _appearance_fonts(doc, annot)
+
+    # Moving and resizing rebuild the appearance with the custom font, not Helvetica
+    pdf_ops.move_annot(annot, 30, 40)
+    assert "F-TestHand" in _appearance_fonts(doc, annot)
+    pdf_ops.resize_annot(annot, fitz.Rect(annot.rect.x0, annot.rect.y0, annot.rect.x0 + 60, annot.rect.y0 + 10))
+    assert "F-TestHand" in _appearance_fonts(doc, annot)
+    assert pdf_ops.freetext_style(annot)["fixed_width"]
+    assert annot.rect.height >= 4 * pdf_ops.LINE_HEIGHT * 14 - 0.5  # re-wrapped, not clipped
+
     out = tmp_path / "out.pdf"
     doc.save(out)
-
     reopened = fitz.open(out)
-    embedded = [f[3] for f in reopened[0].get_fonts()]
+    rpage = reopened[0]
+    embedded = [f[3] for f in rpage.get_fonts()]
     assert any("TestHand" in name for name in embedded), embedded
-    assert "HELLO WORLD" in reopened[0].get_text().upper()
+    saved = next(rpage.annots())
+    assert saved.info["content"] == "HELLO WORLD\nSECOND LINE"
+    assert pdf_ops.freetext_style(saved)["fontname"] == test_font
 
 
-def test_base14_fonts_stay_editable_annotations():
+def test_base14_text_box_style_round_trip():
     doc = fitz.open()
     page = doc.new_page()
-    annot = pdf_ops.add_freetext(page, fitz.Rect(50, 50, 250, 90), "Times text", QColor("black"), 12, "Times", align=1)
-    assert annot is not None and annot.type[1] == "FreeText"
-    assert annot.info["content"] == "Times text"
+    annot = pdf_ops.add_text_box(page, fitz.Point(50, 50), "Times text", QColor(200, 0, 0), 16, "Times")
+    style = pdf_ops.freetext_style(annot)
+    assert style["fontname"] == "Times" and style["fontsize"] == 16
+    assert abs(style["color"][0] - 200 / 255) < 0.01
+    w, h = pdf_ops.text_box_size("Times text", 16, "Times")
+    assert abs(annot.rect.width - w) < 0.5 and abs(annot.rect.height - h) < 0.5
+
+
+def _window_with_page(app, tmp_path):
+    from pdfannotator.main_window import MainWindow
+
+    src = tmp_path / "blank.pdf"
+    d = fitz.open()
+    d.new_page(width=400, height=600)
+    d.save(src)
+    win = MainWindow()
+    win.resize(1200, 900)
+    win.show()
+    tab = win.current_tab()
+    tab.load(str(src))
+    pw = tab.page_widgets[0]
+    pw.render()
+    app.processEvents()
+    return win, tab, pw
+
+
+def test_click_type_escape_then_move_and_resize(app, tmp_path):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    win, tab, pw = _window_with_page(app, tmp_path)
+    win.set_tool(Tool.TEXTBOX)
+    assert pw.cursor().shape() == Qt.IBeamCursor
+
+    # Click on the page: the editor opens right there, on the page
+    QTest.mouseClick(pw, Qt.LeftButton, pos=QPoint(100, 120))
+    assert tab.text_edit is not None
+    editor = tab.text_edit["editor"]
+    assert editor.parent() is pw and editor.isVisible()
+    start_width = editor.width()
+    QTest.keyClicks(editor, "Hello world, typed on the page")
+    assert editor.width() > start_width  # grows with the text
+    QTest.keyClick(editor, Qt.Key_Escape)
+
+    # Finished: a FreeText box exists, is selected, and the Select tool is active
+    assert tab.text_edit is None
+    assert win.current_tool == Tool.SELECT
+    page = tab.document.page(0)
+    boxes = [a for a in page.annots() if a.type[1] == "FreeText"]
+    assert len(boxes) == 1 and boxes[0].info["content"] == "Hello world, typed on the page"
+    assert len(tab.selected) == 1
+    click_pdf = pw.to_pdf_point(QPoint(100, 120))
+    assert abs(boxes[0].rect.x0 - click_pdf.x) < 1 and abs(boxes[0].rect.y0 - click_pdf.y) < 1
+
+    # Resize with the right-edge handle: box gets narrower, text wraps, box grows taller
+    frame, has_handles = tab.selection_frame(pw)
+    assert has_handles
+    right = QPoint(round(frame.right()), round(frame.center().y()))
+    old = fitz.Rect(boxes[0].rect)
+    QTest.mousePress(pw, Qt.LeftButton, pos=right)
+    QTest.mouseMove(pw, right - QPoint(round(frame.width() / 2), 0))
+    tab.update_select_drag(pw, right - QPoint(round(frame.width() / 2), 0))
+    QTest.mouseRelease(pw, Qt.LeftButton, pos=right - QPoint(round(frame.width() / 2), 0))
+    box = next(a for a in tab.document.page(0).annots() if a.type[1] == "FreeText")
+    assert box.rect.width < old.width - 10
+    assert box.rect.height > old.height
+
+    # Move it by dragging the body
+    inside = QPoint(round(frame.left() + 5), round(frame.top() + 5))
+    before = fitz.Rect(box.rect)
+    QTest.mousePress(pw, Qt.LeftButton, pos=inside)
+    tab.update_select_drag(pw, inside + QPoint(40, 30))
+    QTest.mouseRelease(pw, Qt.LeftButton, pos=inside + QPoint(40, 30))
+    box = next(a for a in tab.document.page(0).annots() if a.type[1] == "FreeText")
+    assert box.rect.x0 > before.x0 + 5 and box.rect.y0 > before.y0 + 5
+
+    # Arrow keys nudge the selection
+    tab.selected = [(0, box)]
+    x0 = box.rect.x0
+    QTest.keyClick(pw, Qt.Key_Right, Qt.ShiftModifier)
+    box = next(a for a in tab.document.page(0).annots() if a.type[1] == "FreeText")
+    assert abs(box.rect.x0 - (x0 + 10)) < 0.5
+    win.close()
+
+
+def test_double_click_edits_in_place(app, tmp_path):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    win, tab, pw = _window_with_page(app, tmp_path)
+    page = tab.document.page(0)
+    annot = pdf_ops.add_text_box(page, fitz.Point(60, 80), "First draft", QColor("black"), 14, "Helvetica")
+    tab.document.snapshot()
+    pw.render()
+    win.set_tool(Tool.SELECT)
+    inside = tab.annot_rect_px(pw, annot).center().toPoint()
+    QTest.mouseDClick(pw, Qt.LeftButton, pos=inside)
+    assert tab.text_edit is not None and tab.text_edit["annot"] is not None
+    editor = tab.text_edit["editor"]
+    assert editor.toPlainText() == "First draft"
+    editor.selectAll()
+    QTest.keyClicks(editor, "Final text")
+    # Clicking elsewhere on the page finishes editing
+    QTest.mouseClick(pw, Qt.LeftButton, pos=QPoint(350, 550))
+    assert tab.text_edit is None
+    boxes = [a for a in tab.document.page(0).annots() if a.type[1] == "FreeText"]
+    assert [b.info["content"] for b in boxes] == ["Final text"]
+    win.close()
+
+
+def test_drag_sets_wrap_width_and_toolbar_restyles_live(app, tmp_path):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    win, tab, pw = _window_with_page(app, tmp_path)
+    win.set_tool(Tool.TEXTBOX)
+    QTest.mousePress(pw, Qt.LeftButton, pos=QPoint(50, 50))
+    QTest.mouseMove(pw, QPoint(200, 60))
+    QTest.mouseRelease(pw, Qt.LeftButton, pos=QPoint(200, 60))
+    editor = tab.text_edit["editor"]
+    assert editor.fixed_width_px is not None
+    win.font_spin.setValue(20)
+    assert editor.fontsize == 20
+    QTest.keyClicks(editor, "a fairly long sentence that has to wrap inside the dragged box")
+    QTest.keyClick(editor, Qt.Key_Escape)
+    box = next(a for a in tab.document.page(0).annots() if a.type[1] == "FreeText")
+    width_pt = pw.to_pdf_point(QPoint(200, 60)).x - pw.to_pdf_point(QPoint(50, 50)).x
+    assert abs(box.rect.width - width_pt) < 1
+    assert pdf_ops.freetext_style(box)["fontsize"] == 20
+    assert box.rect.height > 2 * 20
+    win.close()

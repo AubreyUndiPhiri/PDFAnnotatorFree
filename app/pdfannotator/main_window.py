@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, QSize, QRectF
 
 from .document_tab import DocumentTab
 from . import fonts, icons, theme
-from .dialogs import SignaturePadDialog, PropertiesDialog, ToolStylesDialog, FindBar, AdvancedTextEditorDialog
+from .dialogs import SignaturePadDialog, PropertiesDialog, ToolStylesDialog, FindBar
 from .tools import (
     Tool, STAMP_NAMES, UNITS, STYLED_TOOLS, DEFAULT_TOOL_STYLE,
     TOOL_STYLE_OVERRIDES, TOOL_SHORTCUTS, TOOL_LABELS, TOOL_HINTS, TOOL_ICONS,
@@ -147,8 +147,14 @@ class MainWindow(QMainWindow):
             act.setCheckable(True)
         keys = act.shortcut().toString(QKeySequence.NativeText)
         act.setToolTip(f"{tip or text.replace('...', '')}" + (f"  ({keys})" if keys else ""))
+        act.triggered.connect(self._finish_text_editing)
         act.triggered.connect(slot)
         return act
+
+    def _finish_text_editing(self, *_):
+        tab = self.current_tab()
+        if tab is not None:
+            tab.finish_text_editing()
 
     def _create_actions(self):
         """Actions shared by the toolbars and the menus (one icon, one
@@ -379,6 +385,7 @@ class MainWindow(QMainWindow):
             act.setShortcut(shortcut)
         if checkable:
             act.setCheckable(True)
+        act.triggered.connect(self._finish_text_editing)
         act.triggered.connect(slot)
         menu.addAction(act)
         return act
@@ -628,6 +635,7 @@ class MainWindow(QMainWindow):
 
     def _confirm_close_tab(self, tab) -> bool:
         """Returns True if it's OK to proceed closing (saved, discarded, or clean)."""
+        tab.finish_text_editing()
         if not self._tab_dirty(tab):
             return True
         index = self.tabs.indexOf(tab)
@@ -670,11 +678,15 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------
 
     def set_tool(self, tool):
+        tab = self.current_tab()
+        if tab is not None and tab.text_edit is not None:
+            tab.finish_text_editing()  # may itself switch to Select; the requested tool wins below
         self.current_tool = tool
         if tool in self.tool_actions:
             self.tool_actions[tool].setChecked(True)
-        tab = self.current_tab()
         if tab is not None:
+            for pw in tab.page_widgets:
+                pw.apply_tool_cursor()
             tab.selected = []
             for pw in tab.page_widgets:
                 pw.update()
@@ -706,9 +718,16 @@ class MainWindow(QMainWindow):
 
     def _set_fontsize(self, value):
         self.current_fontsize = value
+        self._restyle_text_edit()
 
     def _set_fontname(self, name):
         self.current_fontname = name
+        self._restyle_text_edit()
+
+    def _restyle_text_edit(self):
+        tab = self.current_tab()
+        if tab is not None:
+            tab.update_text_edit_style()
 
     def _on_unit_changed(self, index):
         tab = self.current_tab()
@@ -720,6 +739,7 @@ class MainWindow(QMainWindow):
         if color.isValid():
             self.current_color = color
             self._update_color_button(color)
+            self._restyle_text_edit()
 
     def _update_color_button(self, color):
         self.color_btn.setIcon(QIcon(swatch_pixmap(color)))
@@ -743,6 +763,7 @@ class MainWindow(QMainWindow):
         self.open_files_as_tabs(paths)
 
     def _save_tab(self, tab):
+        tab.finish_text_editing()
         if not tab.document.is_open:
             return
         if tab.document.path:

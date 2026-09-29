@@ -52,8 +52,11 @@ display. The pytest suite adds checks for fonts and icons.
 
 Single-letter shortcuts are shown in brackets.
 
-- **Select** (U): click to select (Ctrl+click for more), drag to move,
-  `Delete`/`Backspace` to remove, double-click text or notes to edit.
+- **Select** (U): click to select (Ctrl+click for more). A single selected
+  text box, rectangle, ellipse or stamp shows 8 handles: drag the body to
+  move it, drag a handle to resize it, use the arrow keys to nudge it (Shift
+  for 10 pt steps), `Delete`/`Backspace` to remove it. Double-click a text
+  box to edit it in place, or a note to edit its comment.
 - **Extract Text** (X): drag across text to copy it to the clipboard.
 - **Pan** (N): drag to scroll.
 - **Zoom** (Z): left-click to zoom in, right-click to zoom out, centred on the
@@ -62,9 +65,13 @@ Single-letter shortcuts are shown in brackets.
 - **Note**: click to add a sticky-note comment.
 - **Pen** (P): freehand drawing. **Marker** (M): translucent highlighter
   stroke.
-- **Text** (T) / **Formula**: drag to size a box, then type. Choose the font,
-  size, colour and alignment in the editor. Formula text is plain text, not
-  rendered LaTeX.
+- **Text** (T) / **Formula**: the cursor becomes a text cursor. Click on the
+  page and type straight into a dashed box that grows as you type, or drag
+  first to set the box width so the text wraps. The font, size and colour in
+  the toolbar apply live. Press Esc (or Ctrl+Enter) or click elsewhere on the
+  page to finish; the box is then selected, ready to move or resize. Click an
+  existing text box with the Text tool to edit it. Formula text is plain
+  text, not rendered LaTeX.
 - **Stamp** (A): named stamps (Approved, Draft, Confidential, ...).
 - **Line** (L) / **Arrow** (W) / **Rectangle** (R) / **Ellipse** (I): drag to
   draw.
@@ -118,9 +125,10 @@ Single-letter shortcuts are shown in brackets.
 
 The toolbar **Font** dropdown and the text editor offer Helvetica, Times,
 Courier, plus every `.ttf`/`.otf` file in `app/assets/fonts/`. The built-in
-three are saved as editable text annotations. Custom fonts are embedded in the
-PDF and drawn onto the page, so they display correctly in any PDF viewer, but
-that text can't be moved or edited afterward (undo still works).
+three are standard text annotations. Custom fonts are embedded in the PDF and
+used to draw the text box's appearance, so the text looks right in any PDF
+viewer and can still be moved, resized and edited in this app. (Other PDF
+editors that rewrite the box may fall back to Helvetica.)
 
 To create `AUPedean.ttf` from your own handwriting:
 
@@ -153,7 +161,7 @@ A few things can't be meaningfully checked by the automated tests:
 - Formula produces plain text (not a rendered LaTeX equation), and Measure
   only reports straight-line distance (no perimeter, area or angle modes).
 - Bold, italic and underline are not offered: PDF text annotations can't
-  carry them, so the editor only shows options that are actually saved.
+  carry them, so only options that are actually saved are shown.
 
 ## Building a standalone Windows .exe
 

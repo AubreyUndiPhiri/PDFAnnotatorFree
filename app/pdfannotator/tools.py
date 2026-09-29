@@ -84,6 +84,8 @@ TOOL_STYLE_OVERRIDES = {
     Tool.UNDERLINE: {"color": (220, 30, 30)},
     Tool.STRIKEOUT: {"color": (220, 30, 30)},
     Tool.DIMENSION: {"color": (0, 90, 200), "width": 1.5},
+    Tool.TEXTBOX: {"color": (29, 36, 51), "fontsize": 14},
+    Tool.FORMULA: {"color": (29, 36, 51), "fontsize": 16},
 }
 
 # Named stamp icons supported natively by PyMuPDF's add_stamp_annot
@@ -168,7 +170,7 @@ TOOL_LABELS = {
 }
 
 TOOL_HINTS = {
-    Tool.SELECT: "Click an annotation to select it (Ctrl+click to multi-select). Drag to move, Delete to remove, double-click text to edit.",
+    Tool.SELECT: "Click to select (Ctrl+click for more). Drag to move, drag a handle to resize, arrow keys to nudge, double-click text to edit.",
     Tool.HIGHLIGHT: "Drag across text to highlight it.",
     Tool.UNDERLINE: "Drag across text to underline it.",
     Tool.STRIKEOUT: "Drag across text to strike it out.",
@@ -179,8 +181,8 @@ TOOL_HINTS = {
     Tool.ELLIPSE: "Drag to draw an ellipse.",
     Tool.LINE: "Drag to draw a line.",
     Tool.ARROW: "Drag to draw an arrow.",
-    Tool.TEXTBOX: "Drag to size a text box, then type your text.",
-    Tool.FORMULA: "Drag to size a box, then type a formula/equation.",
+    Tool.TEXTBOX: "Click on the page and type. Drag first to set the box width. Esc or click outside to finish.",
+    Tool.FORMULA: "Click on the page and type a formula or label. Esc or click outside to finish.",
     Tool.STAMP: "Drag to place the selected stamp.",
     Tool.IMAGE_STAMP: "Drag to place the chosen image.",
     Tool.EXTRACT_TEXT: "Drag across text to copy it to the clipboard.",

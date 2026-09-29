@@ -3,11 +3,25 @@ from PySide6.QtWidgets import QWidget
 from PySide6.QtGui import QPainter, QPixmap, QImage, QPen, QColor
 from PySide6.QtCore import Qt, QPoint, QRect
 
-from . import pdf_ops, theme
+from . import handles, pdf_ops, theme
 from .tools import Tool
 
 # Tools that collect a freehand point path while the mouse is dragging
 PATH_TOOLS = {Tool.INK, Tool.MARKER, Tool.ERASER, Tool.LASSO}
+
+TEXT_TOOLS = (Tool.TEXTBOX, Tool.FORMULA)
+
+# Mouse cursor per tool (anything not listed gets a crosshair)
+TOOL_CURSORS = {
+    Tool.SELECT: Qt.ArrowCursor,
+    Tool.TEXTBOX: Qt.IBeamCursor,
+    Tool.FORMULA: Qt.IBeamCursor,
+    Tool.EXTRACT_TEXT: Qt.IBeamCursor,
+    Tool.PAN: Qt.OpenHandCursor,
+    Tool.POINTER: Qt.PointingHandCursor,
+    Tool.LASER_POINTER: Qt.ArrowCursor,
+    Tool.NOTE: Qt.PointingHandCursor,
+}
 
 # Tools drawn as a simple rubber-band rectangle/line while dragging, committed
 # as a single (p1, p2) pair on release
@@ -41,9 +55,12 @@ class PageWidget(QWidget):
 
         self._pan_last_pos = None
         self._flash_rect = None
-        self.floating_text_editor = None
 
         self.ensure_placeholder()
+        self.apply_tool_cursor()
+
+    def apply_tool_cursor(self):
+        self.setCursor(TOOL_CURSORS.get(self.controller.current_tool, Qt.CrossCursor))
 
     def page(self) -> fitz.Page:
         return self.controller.document.page(self.page_index)
@@ -87,21 +104,7 @@ class PageWidget(QWidget):
             painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
 
         if self.rendered:
-            for sel_page, annot in self.controller.selected:
-                if sel_page != self.page_index:
-                    continue
-                try:
-                    r = fitz.Rect(annot.rect) * pdf_ops.coord_matrix(self.page(), self.zoom())
-                    r = r.normalize()
-                    offset = QPoint(0, 0)
-                    if self.controller.select_dragging:
-                        offset = self.controller.select_offset_px
-                    pen = QPen(theme.SELECTION, 1.5, Qt.DashLine)
-                    painter.setPen(pen)
-                    painter.drawRect(int(r.x0) + offset.x(), int(r.y0) + offset.y(),
-                                      max(1, int(r.width)), max(1, int(r.height)))
-                except Exception:
-                    pass
+            self._paint_selection(painter)
 
         if self._flash_rect is not None and self.rendered:
             try:
@@ -133,13 +136,45 @@ class PageWidget(QWidget):
                     painter.drawLine(self._path_points[i - 1], self._path_points[i])
             elif self._drag_start and self._drag_current:
                 r = QRect(self._drag_start, self._drag_current).normalized()
-                if tool in (Tool.LINE, Tool.ARROW, Tool.DIMENSION):
+                if tool in TEXT_TOOLS:
+                    painter.setPen(QPen(theme.SELECTION, 1, Qt.DashLine))
+                    painter.drawRect(r)
+                elif tool in (Tool.LINE, Tool.ARROW, Tool.DIMENSION):
                     painter.drawLine(self._drag_start, self._drag_current)
                 elif tool == Tool.ELLIPSE:
                     painter.drawEllipse(r)
                 else:
                     painter.drawRect(r)
         painter.end()
+
+    def _paint_selection(self, painter):
+        painter.setRenderHint(QPainter.Antialiasing)
+        frame = self.controller.selection_frame(self)
+        if frame is not None:
+            rect, show_handles = frame
+            painter.setPen(QPen(theme.SELECTION, 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(rect)
+            if show_handles:
+                painter.setPen(QPen(QColor("#ffffff"), 1.2))
+                painter.setBrush(theme.SELECTION)
+                for name, point in handles.handle_points(rect).items():
+                    radius = handles.CORNER_RADIUS if len(name) == 2 else handles.EDGE_RADIUS
+                    painter.drawEllipse(point, radius, radius)
+            painter.setRenderHint(QPainter.Antialiasing, False)
+            return
+        offset = self.controller.select_offset_px if self.controller.select_dragging else QPoint(0, 0)
+        painter.setPen(QPen(theme.SELECTION, 1, Qt.DashLine))
+        painter.setBrush(Qt.NoBrush)
+        for sel_page, annot in self.controller.selected:
+            if sel_page != self.page_index:
+                continue
+            try:
+                rect = self.controller.annot_rect_px(self, annot)
+                painter.drawRect(rect.translated(offset.x(), offset.y()))
+            except Exception:
+                pass
+        painter.setRenderHint(QPainter.Antialiasing, False)
 
     def to_pdf_point(self, qpoint: QPoint) -> fitz.Point:
         return pdf_ops.pixel_to_pdf(self.page(), self.zoom(), qpoint.x(), qpoint.y())
@@ -155,9 +190,13 @@ class PageWidget(QWidget):
     def mousePressEvent(self, event):
         if not self.rendered or event.button() not in (Qt.LeftButton, Qt.RightButton):
             return
-        self.setFocus()
         tool = self.controller.current_tool
         pos = self._event_pos(event)
+        if self.controller.text_edit is not None:
+            # Clicking anywhere on the page outside the box finishes typing
+            self.controller.finish_text_editing()
+            return
+        self.setFocus()
 
         if event.button() == Qt.RightButton:
             if tool == Tool.ZOOM:
@@ -173,9 +212,12 @@ class PageWidget(QWidget):
             self.controller.place_note(self, pos)
             return
 
-        if tool in (Tool.TEXTBOX, Tool.FORMULA):
-            self._open_floating_text_editor(pos)
-            return
+        if tool in TEXT_TOOLS:
+            existing = pdf_ops.find_annot_at(self.page(), self.to_pdf_point(pos))
+            if pdf_ops.is_text_box(existing):
+                self.controller.begin_text_edit(self, annot=existing)
+                return
+            # otherwise fall through: a click types at that spot, a drag sets the box width
 
         if tool == Tool.ZOOM:
             self.controller.zoom_click(self, pos, zoom_in=True)
@@ -210,7 +252,10 @@ class PageWidget(QWidget):
             self.controller.update_laser_pointer(self, pos)
 
         if tool == Tool.SELECT:
-            self.controller.update_select_drag(self, pos)
+            if event.buttons() & Qt.LeftButton:
+                self.controller.update_select_drag(self, pos)
+            else:
+                self.setCursor(self.controller.hover_cursor(self, pos))
             return
 
         if tool == Tool.POLYGON:
@@ -242,7 +287,14 @@ class PageWidget(QWidget):
             self.controller.hide_laser_pointer()
         super().leaveEvent(event)
 
+    NUDGE_KEYS = {Qt.Key_Left: (-1, 0), Qt.Key_Right: (1, 0), Qt.Key_Up: (0, -1), Qt.Key_Down: (0, 1)}
+
     def keyPressEvent(self, event):
+        if self.controller.current_tool == Tool.SELECT and self.controller.selected and event.key() in self.NUDGE_KEYS:
+            step = 10 if event.modifiers() & Qt.ShiftModifier else 1
+            dx, dy = self.NUDGE_KEYS[event.key()]
+            self.controller.nudge_selected(self, dx * step, dy * step)
+            return
         if self.controller.current_tool == Tool.POLYGON and self._polygon_points_px:
             if event.key() in (Qt.Key_Return, Qt.Key_Enter):
                 self._finish_polygon()
@@ -253,36 +305,6 @@ class PageWidget(QWidget):
                 self.update()
                 return
         super().keyPressEvent(event)
-
-    def _open_floating_text_editor(self, pos):
-        if self.floating_text_editor is not None:
-            self.floating_text_editor.close()
-            self.floating_text_editor = None
-
-        from .dialogs import FloatingTextEditor
-
-        self.floating_text_editor = FloatingTextEditor(
-            self,
-            initial_text="",
-            initial_color=self.controller.current_color,
-            initial_fontsize=self.controller.current_fontsize,
-            initial_fontname=self.controller.current_fontname,
-        )
-        self.floating_text_editor.set_apply_callback(
-            lambda text, color, fontsize: self.controller.commit_inline_text(
-                self,
-                self.to_pdf_point(pos),
-                text,
-                color,
-                fontsize,
-                self.controller.current_tool,
-            )
-        )
-        self.floating_text_editor.set_cancel_callback(lambda: None)
-        self.floating_text_editor.move(pos.x() + 16, max(12, pos.y() - 10))
-        self.floating_text_editor.show()
-        self.floating_text_editor.raise_()
-        self.floating_text_editor.activateWindow()
 
     def _finish_polygon(self):
         if len(self._polygon_points_px) < 3:
@@ -332,9 +354,17 @@ class PageWidget(QWidget):
                 self.controller.commit_lasso(self, pts)
             return
 
-        if (start - end).manhattanLength() < 3 and tool not in (
-            Tool.TEXTBOX, Tool.STAMP, Tool.IMAGE_STAMP, Tool.FORMULA,
-        ):
+        if tool in TEXT_TOOLS:
+            if (start - end).manhattanLength() < 6:
+                self.controller.begin_text_edit(self, origin_pdf=self.to_pdf_point(start))
+            else:
+                box = QRect(start, end).normalized()
+                p1 = self.to_pdf_point(box.topLeft())
+                p2 = self.to_pdf_point(box.topRight())
+                self.controller.begin_text_edit(self, origin_pdf=p1, width_pt=abs(p2.x - p1.x))
+            return
+
+        if (start - end).manhattanLength() < 3 and tool not in (Tool.STAMP, Tool.IMAGE_STAMP):
             return
 
         p1 = self.to_pdf_point(start)

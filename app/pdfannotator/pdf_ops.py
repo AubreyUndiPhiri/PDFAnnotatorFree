@@ -1,5 +1,8 @@
 """Helper functions that operate directly on a fitz.Page to create/edit annotations."""
+from functools import lru_cache
+
 import fitz
+from PySide6.QtGui import QColor
 
 from . import fonts
 
@@ -121,37 +124,211 @@ def add_line(page: fitz.Page, p1, p2, color, width, arrow=False) -> fitz.Annot:
     return annot
 
 
-def add_freetext(page: fitz.Page, rect, text, color, fontsize=12, fontname=fonts.DEFAULT_FONT, align=0):
-    """Add text in the chosen font. Base-14 fonts become an editable FreeText
-    annotation (returned); custom fonts are embedded and drawn into the page
-    content (returns None, since there is no annotation). align: 0 left,
-    1 centre, 2 right."""
-    if fonts.is_custom_font(fontname):
-        insert_custom_font_text(page, rect, text, color, fontsize, fontname, align)
-        return None
+# ---------------------------------------------------------------------------
+# Text boxes (FreeText annotations)
+#
+# Every text box is a FreeText annotation, so it can be selected, moved,
+# resized and edited later. Base-14 fonts use the viewer-generated
+# appearance. Custom fonts (e.g. AUPedean) get an appearance stream drawn
+# with the embedded font; the font name is kept in the /AupFont key so the
+# appearance can be rebuilt after every move, resize or edit (PyMuPDF
+# regenerates a Helvetica appearance whenever the rect or style changes).
+# ---------------------------------------------------------------------------
+
+LINE_HEIGHT = 1.2      # baseline-to-baseline distance, in font sizes (matches MuPDF)
+FIRST_BASELINE = 0.8   # first baseline below the box top, in font sizes (matches MuPDF)
+TEXT_SLACK = 3.0       # extra width (pt) so the viewer never wraps an auto-sized line
+CUSTOM_FONT_KEY = "AupFont"
+FIXED_WIDTH_KEY = "AupFixedWidth"
+_DA_FONTS = {"helv": "Helvetica", "tiro": "Times", "cour": "Courier"}
+
+
+@lru_cache(maxsize=None)
+def _font_file(path):
+    return fitz.Font(fontfile=path)
+
+
+def _measurer(fontname):
+    path = fonts.custom_font_path(fontname)
+    if path:
+        font = _font_file(path)
+        return lambda s, size: font.text_length(s, fontsize=size)
+    code = fonts.BASE14_FONTS.get(fontname, "helv")
+    return lambda s, size: fitz.get_text_length(s, fontname=code, fontsize=size)
+
+
+def wrap_text(text, fontsize, fontname, width=None):
+    """Lines as the viewer lays them out: explicit newlines, plus greedy
+    word wrap when a box width is given."""
+    measure = _measurer(fontname)
+    lines = []
+    for para in text.split("\n"):
+        if width is None:
+            lines.append(para)
+            continue
+        current = ""
+        for word in para.split(" "):
+            candidate = word if not current else f"{current} {word}"
+            if current and measure(candidate, fontsize) > width:
+                lines.append(current)
+                current = word
+            else:
+                current = candidate
+        lines.append(current)
+    return lines or [""]
+
+
+def text_box_size(text, fontsize, fontname, width=None):
+    """(width, height) in points of a box that fits `text`. With width=None
+    the box grows to the longest line; otherwise lines wrap at `width`."""
+    lines = wrap_text(text, fontsize, fontname, width)
+    if width is None:
+        measure = _measurer(fontname)
+        width = max(measure(line, fontsize) for line in lines) + TEXT_SLACK
+    return max(width, fontsize), max(1, len(lines)) * LINE_HEIGHT * fontsize
+
+
+def add_text_box(page, origin, text, color, fontsize=12, fontname=fonts.DEFAULT_FONT, align=0, width=None):
+    """Text box with its top-left corner at `origin`, sized to fit the text."""
+    w, h = text_box_size(text, fontsize, fontname, width)
+    rect = fitz.Rect(origin.x, origin.y, origin.x + w, origin.y + h)
+    annot = add_freetext(page, rect, text, color, fontsize, fontname, align)
+    if width is not None:
+        page.parent.xref_set_key(annot.xref, FIXED_WIDTH_KEY, "true")
+    return annot
+
+
+def add_freetext(page: fitz.Page, rect, text, color, fontsize=12, fontname=fonts.DEFAULT_FONT, align=0) -> fitz.Annot:
+    """FreeText annotation in the chosen font. align: 0 left, 1 centre, 2 right."""
     annot = page.add_freetext_annot(
         rect, text, fontsize=fontsize, fontname=fonts.BASE14_FONTS.get(fontname, "helv"),
         text_color=color_to_rgb(color), align=align,
     )
     annot.update()
+    if fonts.is_custom_font(fontname):
+        page.parent.xref_set_key(annot.xref, CUSTOM_FONT_KEY, fitz.get_pdf_str(fontname))
+        _apply_custom_appearance(annot)
     return annot
 
 
-def insert_custom_font_text(page: fitz.Page, rect, text, color, fontsize, fontname, align=0):
+def freetext_style(annot) -> dict:
+    """Font, size, colour (0-1 RGB), alignment and text of a FreeText box."""
+    doc = annot.parent.parent
+    da = doc.xref_get_key(annot.xref, "DA")[1] or ""
+    style = {"fontsize": 12.0, "fontname": fonts.DEFAULT_FONT, "color": (0.0, 0.0, 0.0), "align": 0,
+             "text": annot.info.get("content", ""), "fixed_width": False}
+    tokens = da.replace("/", " /").split()
+    for i, tok in enumerate(tokens):
+        try:
+            if tok == "Tf" and i >= 2:
+                style["fontname"] = _DA_FONTS.get(tokens[i - 2].lstrip("/").lower()[:4], fonts.DEFAULT_FONT)
+                style["fontsize"] = float(tokens[i - 1])
+            elif tok == "rg" and i >= 3:
+                style["color"] = tuple(float(v) for v in tokens[i - 3:i])
+            elif tok == "g" and i >= 1:
+                style["color"] = (float(tokens[i - 1]),) * 3
+        except ValueError:
+            pass
+    kind, custom = doc.xref_get_key(annot.xref, CUSTOM_FONT_KEY)
+    if kind == "string" and custom:
+        style["fontname"] = custom
+    kind, q = doc.xref_get_key(annot.xref, "Q")
+    if kind == "int":
+        style["align"] = int(q)
+    style["fixed_width"] = doc.xref_get_key(annot.xref, FIXED_WIDTH_KEY)[1] == "true"
+    return style
+
+
+def set_freetext(annot, text, color, fontsize, fontname, rect, align=None, fixed_width=None):
+    """Rewrite an existing text box's text, style and rect in place."""
+    doc = annot.parent.parent
+    if align is not None:
+        doc.xref_set_key(annot.xref, "Q", str(int(align)))
+    if fixed_width is not None:
+        doc.xref_set_key(annot.xref, FIXED_WIDTH_KEY, "true" if fixed_width else "null")
+    annot.set_info(content=text)
+    annot.set_rect(fitz.Rect(rect))
+    annot.update(fontsize=fontsize, fontname=fonts.BASE14_FONTS.get(fontname, "helv"),
+                 text_color=color_to_rgb(color))
+    if fonts.is_custom_font(fontname):
+        doc.xref_set_key(annot.xref, CUSTOM_FONT_KEY, fitz.get_pdf_str(fontname))
+    else:
+        doc.xref_set_key(annot.xref, CUSTOM_FONT_KEY, "null")
+    _apply_custom_appearance(annot)
+
+
+def _page_font_xref(page, ref, fontfile):
+    for xref, _ext, _type, _base, name, _enc in page.get_fonts():
+        if name == ref:
+            return xref
+    return page.insert_font(fontname=ref, fontfile=fontfile)
+
+
+def _apply_custom_appearance(annot):
+    """Draw the box's text with its embedded custom font. No-op for base-14
+    boxes, and for custom boxes whose font file is not installed (the saved
+    appearance is then kept until the box is changed)."""
+    doc = annot.parent.parent
+    kind, fontname = doc.xref_get_key(annot.xref, CUSTOM_FONT_KEY)
+    if kind != "string" or not fontname:
+        return False
     fontfile = fonts.custom_font_path(fontname)
+    if not fontfile:
+        return False
+    style = freetext_style(annot)
+    size = style["fontsize"]
+    rect = annot.rect
+    w, h = max(rect.width, 1), max(rect.height, 1)
     ref = fonts.pdf_font_ref(fontname)
-    page.insert_font(fontname=ref, fontfile=fontfile)
-    rect = fitz.Rect(rect)
-    # Widen to fit the longest line, then grow downward until the text fits;
-    # insert_textbox writes nothing and returns a negative value on overflow.
-    longest = max(fitz.Font(fontfile=fontfile).text_length(line, fontsize) for line in text.splitlines() or [""])
-    rect.x1 = max(rect.x1, rect.x0 + longest + 4)
-    for _ in range(50):
-        rc = page.insert_textbox(rect, text, fontname=ref, fontfile=fontfile, fontsize=fontsize, color=color_to_rgb(color), align=align)
-        if rc >= 0:
-            return
-        rect.y1 += -rc + 1
-    raise ValueError("Text does not fit on the page")
+    measure = _measurer(fontname)
+
+    scratch = fitz.open()
+    sp = scratch.new_page(width=w, height=h)
+    sp.insert_font(fontname=ref, fontfile=fontfile)
+    for i, line in enumerate(wrap_text(style["text"], size, fontname, w)):
+        if not line:
+            continue
+        free = w - measure(line, size)
+        x = {1: free / 2, 2: free}.get(style["align"], 0)
+        sp.insert_text((x, FIRST_BASELINE * size + i * LINE_HEIGHT * size), line,
+                       fontname=ref, fontfile=fontfile, fontsize=size, color=style["color"])
+    content = sp.read_contents()
+
+    font_xref = _page_font_xref(annot.parent, ref, fontfile)
+    kind, ap = doc.xref_get_key(annot.xref, "AP/N")
+    xobj = int(ap.split()[0]) if kind == "xref" else doc.get_new_xref()
+    doc.update_object(xobj, f"<</Type/XObject/Subtype/Form/BBox[0 0 {w:g} {h:g}]"
+                            f"/Resources<</Font<</{ref} {font_xref} 0 R>>>>>>")
+    doc.update_stream(xobj, content)
+    doc.xref_set_key(annot.xref, "AP", f"<</N {xobj} 0 R>>")
+    return True
+
+
+def is_text_box(annot) -> bool:
+    return annot is not None and annot.type[0] == fitz.PDF_ANNOT_FREE_TEXT
+
+
+# Annotation types whose rect can be dragged to a new size
+RESIZABLE_TYPES = {fitz.PDF_ANNOT_FREE_TEXT, fitz.PDF_ANNOT_SQUARE, fitz.PDF_ANNOT_CIRCLE, fitz.PDF_ANNOT_STAMP}
+
+
+def is_resizable(annot) -> bool:
+    return annot is not None and annot.type[0] in RESIZABLE_TYPES
+
+
+def resize_annot(annot, rect):
+    """Give an annotation a new rect. Text boxes re-wrap to the new width and
+    never shrink below the height their text needs."""
+    rect = fitz.Rect(rect).normalize()
+    if is_text_box(annot):
+        style = freetext_style(annot)
+        _w, need_h = text_box_size(style["text"], style["fontsize"], style["fontname"], rect.width)
+        rect.y1 = max(rect.y1, rect.y0 + need_h)
+        set_freetext(annot, style["text"], QColor.fromRgbF(*style["color"]), style["fontsize"],
+                     style["fontname"], rect, fixed_width=True)
+        return
+    annot.set_rect(rect)
+    annot.update()
 
 
 def add_stamp(page: fitz.Page, rect, stamp_name: str) -> fitz.Annot:
@@ -181,6 +358,7 @@ def move_annot(annot: fitz.Annot, dx: float, dy: float):
     new_rect = fitz.Rect(r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy)
     annot.set_rect(new_rect)
     annot.update()
+    _apply_custom_appearance(annot)
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +506,7 @@ def serialize_annot(annot: fitz.Annot) -> dict:
             ends = getattr(annot, "line_ends", (0, 0))
             data["arrow"] = bool(ends and ends[1] not in (0, None))
     elif type_name == "FreeText":
-        data["fontsize"] = 12
+        data["text_style"] = freetext_style(annot)
     return data
 
 
@@ -375,8 +553,12 @@ def deserialize_and_add(page: fitz.Page, data: dict, offset=(0.0, 0.0), override
     if type_name == "FreeText":
         r = data["rect"]
         rect = fitz.Rect(r[0] + dx, r[1] + dy, r[2] + dx, r[3] + dy)
-        annot = page.add_freetext_annot(rect, data["content"], fontsize=data.get("fontsize", 12), text_color=stroke)
-        annot.update()
+        style = data.get("text_style") or {}
+        color = override_color if override_color is not None else style.get("color", (0, 0, 0))
+        annot = add_freetext(page, rect, data["content"], QColor.fromRgbF(*color), style.get("fontsize", 12),
+                             style.get("fontname", fonts.DEFAULT_FONT), style.get("align", 0))
+        if style.get("fixed_width"):
+            page.parent.xref_set_key(annot.xref, FIXED_WIDTH_KEY, "true")
         return annot
     if type_name == "Text":
         r = data["rect"]
