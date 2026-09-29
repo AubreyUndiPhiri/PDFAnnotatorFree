@@ -1,4 +1,6 @@
 """Helper functions that operate directly on a fitz.Page to create/edit annotations."""
+import io
+import zlib
 from functools import lru_cache
 
 import fitz
@@ -148,6 +150,12 @@ def _font_file(path):
     return fitz.Font(fontfile=path)
 
 
+def forget_font_file(path):
+    """Drop cached metrics after a font file was rebuilt on disk."""
+    _font_file.cache_clear()
+    _subset_font.cache_clear()
+
+
 def _measurer(fontname):
     path = fonts.custom_font_path(fontname)
     if path:
@@ -257,11 +265,40 @@ def set_freetext(annot, text, color, fontsize, fontname, rect, align=None, fixed
     _apply_custom_appearance(annot)
 
 
-def _page_font_xref(page, ref, fontfile):
-    for xref, _ext, _type, _base, name, _enc in page.get_fonts():
-        if name == ref:
-            return xref
-    return page.insert_font(fontname=ref, fontfile=fontfile)
+@lru_cache(maxsize=64)
+def _subset_font(path, chars):
+    """The font file cut down to `chars` (plus space), so a PDF carries a few
+    KB per text box instead of the whole font."""
+    import logging
+
+    from fontTools import subset
+    from fontTools.ttLib import TTFont
+
+    logging.getLogger("fontTools.subset").setLevel(logging.ERROR)
+    font = TTFont(path, fontNumber=0)
+    options = subset.Options()
+    options.name_IDs = ["*"]
+    options.notdef_outline = True
+    options.layout_features = []
+    subsetter = subset.Subsetter(options)
+    subsetter.populate(unicodes=sorted({ord(c) for c in chars} | {32}))
+    subsetter.subset(font)
+    buf = io.BytesIO()
+    font.save(buf)
+    return buf.getvalue()
+
+
+def _embed_font(page, ref, data):
+    """Add a font object to the document for an appearance stream. The entry
+    PyMuPDF also puts in the page's resources is removed again, so the font
+    is only kept alive by the text box that uses it (unused subsets are then
+    dropped when the PDF is saved)."""
+    xref = page.insert_font(fontname=ref, fontbuffer=data)
+    try:
+        page.parent.xref_set_key(page.xref, f"Resources/Font/{ref}", "null")
+    except Exception:
+        pass
+    return xref
 
 
 def _apply_custom_appearance(annot):
@@ -279,22 +316,28 @@ def _apply_custom_appearance(annot):
     size = style["fontsize"]
     rect = annot.rect
     w, h = max(rect.width, 1), max(rect.height, 1)
-    ref = fonts.pdf_font_ref(fontname)
     measure = _measurer(fontname)
+    chars = "".join(sorted(set(style["text"].replace("\n", ""))))
+    try:
+        data = _subset_font(fontfile, chars)
+    except Exception:
+        with open(fontfile, "rb") as f:   # subsetting failed: embed the whole font
+            data = f.read()
+    ref = f"{fonts.pdf_font_ref(fontname)}-{zlib.crc32(data) & 0xFFFFFF:06X}"
 
     scratch = fitz.open()
     sp = scratch.new_page(width=w, height=h)
-    sp.insert_font(fontname=ref, fontfile=fontfile)
+    sp.insert_font(fontname=ref, fontbuffer=data)
     for i, line in enumerate(wrap_text(style["text"], size, fontname, w)):
         if not line:
             continue
         free = w - measure(line, size)
         x = {1: free / 2, 2: free}.get(style["align"], 0)
         sp.insert_text((x, FIRST_BASELINE * size + i * LINE_HEIGHT * size), line,
-                       fontname=ref, fontfile=fontfile, fontsize=size, color=style["color"])
+                       fontname=ref, fontsize=size, color=style["color"])
     content = sp.read_contents()
 
-    font_xref = _page_font_xref(annot.parent, ref, fontfile)
+    font_xref = _embed_font(annot.parent, ref, data)
     kind, ap = doc.xref_get_key(annot.xref, "AP/N")
     xobj = int(ap.split()[0]) if kind == "xref" else doc.get_new_xref()
     doc.update_object(xobj, f"<</Type/XObject/Subtype/Form/BBox[0 0 {w:g} {h:g}]"

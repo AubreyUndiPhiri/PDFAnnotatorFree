@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, QSize, QRectF
 
 from .document_tab import DocumentTab
 from . import fonts, icons, theme
-from .dialogs import SignaturePadDialog, PropertiesDialog, ToolStylesDialog, FindBar
+from .dialogs import SignaturePadDialog, PropertiesDialog, ToolStylesDialog, FindBar, HandwritingFontDialog
 from .tools import (
     Tool, STAMP_NAMES, UNITS, STYLED_TOOLS, DEFAULT_TOOL_STYLE,
     TOOL_STYLE_OVERRIDES, TOOL_SHORTCUTS, TOOL_LABELS, TOOL_HINTS, TOOL_ICONS,
@@ -48,6 +48,7 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(QIcon(resource_path("assets", "aupedian_annotators.svg")))
 
         fonts.register_custom_fonts()
+        fonts.load_system_fonts()
         self.current_tool = Tool.SELECT
         self.tool_styles = {t: {**DEFAULT_TOOL_STYLE, **TOOL_STYLE_OVERRIDES.get(t, {})} for t in Tool}
         self.current_stamp_name = STAMP_NAMES[0]
@@ -312,10 +313,10 @@ class MainWindow(QMainWindow):
         prop("width", "Width", self.width_spin)
 
         self.font_family_combo = QComboBox()
-        self.font_family_combo.addItems(fonts.available_fonts())
-        self.font_family_combo.setMinimumWidth(120)
-        self.font_family_combo.setToolTip("Font")
-        self.font_family_combo.currentTextChanged.connect(self._set_fontname)
+        fonts.fill_font_combo(self.font_family_combo, offer_create=True)
+        self.font_family_combo.setMinimumWidth(190)
+        self.font_family_combo.setToolTip("Font (type to search)")
+        self.font_family_combo.textActivated.connect(self._on_font_picked)
         prop("font", "Font", self.font_family_combo)
 
         self.font_spin = QSpinBox()
@@ -449,6 +450,11 @@ class MainWindow(QMainWindow):
             for tool in group:
                 m.addAction(self.tool_actions[tool])
 
+        m.addSeparator()
+        hw_menu = m.addMenu(icons.icon("signature"), "Handwriting Font")
+        self._add_menu_action(hw_menu, "Create Font from Your Handwriting...", self.create_handwriting_font,
+                              icon="signature")
+        self._add_menu_action(hw_menu, "Save Glyph Sheet to Print...", self.save_glyph_sheet, icon="print")
         m.addSeparator()
         self.favorites_menu = m.addMenu(icons.icon("star"), "Favorites")
         self._rebuild_favorites_menu()
@@ -723,6 +729,41 @@ class MainWindow(QMainWindow):
     def _set_fontname(self, name):
         self.current_fontname = name
         self._restyle_text_edit()
+
+    def _on_font_picked(self, text):
+        combo = self.font_family_combo
+        if combo.currentData(Qt.UserRole) == fonts.CREATE_HANDWRITING:
+            combo.setCurrentText(self.current_fontname)
+            self.create_handwriting_font()
+        elif text in fonts.available_fonts():
+            self._set_fontname(text)
+        else:
+            combo.setCurrentText(self.current_fontname)  # half-typed search: keep the real font
+
+    def create_handwriting_font(self):
+        dlg = HandwritingFontDialog(self)
+        dlg.fontCreated.connect(self._on_handwriting_font_created)
+        dlg.exec()
+
+    def _on_handwriting_font_created(self, family):
+        for tool in (Tool.TEXTBOX, Tool.FORMULA):
+            self.tool_styles[tool]["fontname"] = family
+        fonts.fill_font_combo(self.font_family_combo, self.current_fontname, offer_create=True)
+        self._refresh_style_controls()
+        self._restyle_text_edit()
+
+    def save_glyph_sheet(self):
+        from PySide6.QtCore import QStandardPaths, QUrl
+        from PySide6.QtGui import QDesktopServices
+        from .handwriting.sheet import make_sheet
+
+        docs = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
+        path, _ = QFileDialog.getSaveFileName(self, "Save Glyph Sheet",
+                                              os.path.join(docs, f"{fonts.HANDWRITING_FONT}_glyph_sheet.pdf"),
+                                              "PDF Files (*.pdf)")
+        if path:
+            make_sheet(path)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def _restyle_text_edit(self):
         tab = self.current_tab()

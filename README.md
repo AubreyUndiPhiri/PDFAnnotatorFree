@@ -103,7 +103,7 @@ Single-letter shortcuts are shown in brackets.
   (insert, delete, rotate, extract the current page), Flatten All
   Annotations (burns them into the page with PyMuPDF's `bake()`), Remove All
   Annotations.
-- **Tools**: every tool, Favorites, Tool Styles.
+- **Tools**: every tool, Handwriting Font (create a font from your handwriting, save the glyph sheet), Favorites, Tool Styles.
 - **View**: zoom, Actual Size / Fit Page / Fit Width, Full Screen, Page
   Layout (Single Page / Continuous), Go To, Guides (draggable non-printing
   alignment lines), Hide Annotations, Page Thumbnails (F4), Toolbars.
@@ -121,35 +121,54 @@ Single-letter shortcuts are shown in brackets.
   run `python tools\make_app_icon.py` to regenerate the Windows `.ico` used
   by the exe.
 
-## Fonts (including the custom AUPedean font)
+## Fonts (including your AUPedean handwriting font)
 
-The toolbar **Font** dropdown and the text editor offer Helvetica, Times,
-Courier, plus every `.ttf`/`.otf` file in `app/assets/fonts/`. The built-in
-three are standard text annotations. Custom fonts are embedded in the PDF and
-used to draw the text box's appearance, so the text looks right in any PDF
-viewer and can still be moved, resized and edited in this app. (Other PDF
-editors that rewrite the box may fall back to Helvetica.)
+The toolbar **Font** box and **Tools > Tool Styles** list, in this order:
 
-To create `AUPedean.ttf` from your own handwriting:
+1. **Your handwriting fonts** (such as AUPedean), from `app/assets/fonts/` and
+   `%APPDATA%\AupedianAnnotators\fonts\`.
+2. **Helvetica, Times, Courier**: the standard PDF fonts, saved as plain
+   text annotations.
+3. **Every font installed in Windows** that allows embedding (about 600 on a
+   typical PC, including the Bold and Italic styles, and handwriting-style
+   fonts such as Ink Free, Segoe Print and Segoe Script). Fonts whose licence
+   forbids embedding, symbol fonts and very large fonts (over 15 MB) are left
+   out.
 
-1. Print `tools/font_builder/AUPedean_glyph_sheet.pdf` at 100% scale
-   (regenerate it with `python tools\font_builder\make_template.py`).
+Each font is previewed in its own typeface, and you can type in the box to
+search (for example "bold" or "script"). Every font other than the standard
+three is embedded in the PDF, cut down to just the characters each text box
+uses, so the text looks the same in any PDF viewer and files stay small. The
+text can still be moved, resized and edited in this app. Other PDF editors
+that rewrite a box may fall back to Helvetica.
+
+### Creating AUPedean from your handwriting
+
+In the app: **Tools > Handwriting Font > Create Font from Your
+Handwriting...**, or pick **Create AUPedean from your handwriting...** at the
+top of the font list. The window walks you through it:
+
+1. **Save Glyph Sheet...**, then print it at 100% (actual size).
 2. Write one character per box in dark pen, sitting on the lower dashed line.
-   Leave any box empty to skip it.
-3. Scan it, or photograph it flat, sharp and well lit, with all four black
-   corner squares in view.
-4. Build the font into the app:
+   Leave a box empty to skip it.
+3. Scan it, or photograph it flat and in focus with all four black corner
+   squares visible, then **Choose Scan or Photo...** and **Create Font**.
 
-   ```
-   venv\Scripts\python.exe tools\font_builder\build_font.py path\to\scan.jpg
-   ```
+The font is saved to `%APPDATA%\AupedianAnnotators\fonts\AUPedean.ttf` and
+appears in every font list straight away, with no restart or rebuild. Doing
+it again with the same name replaces it. Lowercase letters reuse the
+capitals. A copy of the sheet is also at
+`tools/font_builder/AUPedean_glyph_sheet.pdf`.
 
-   This writes `app/assets/fonts/AUPedean.ttf`. Add `--debug out_dir` to
-   save the straightened sheet and each glyph mask if something looks off.
-   Lowercase letters reuse the capitals.
+The same builder works from the command line:
 
-Needs `opencv-python`, `numpy` and `fonttools` (only for building the font,
-not for running the app).
+```
+venv\Scripts\python.exe tools\font_builder\build_font.py path\to\scan.jpg [--debug out_dir]
+```
+
+`--debug` saves the straightened sheet and each character's ink mask, to
+check what went wrong with a difficult photo. Use `--out app\assets\fonts\AUPedean.ttf`
+to ship the font inside the app and exe for everyone.
 
 ## Known gaps / manual-only
 
@@ -160,8 +179,9 @@ A few things can't be meaningfully checked by the automated tests:
 - Send Mail opens a real mail client, which can't be automated.
 - Formula produces plain text (not a rendered LaTeX equation), and Measure
   only reports straight-line distance (no perimeter, area or angle modes).
-- Bold, italic and underline are not offered: PDF text annotations can't
-  carry them, so only options that are actually saved are shown.
+- There are no separate bold, italic or underline buttons: PDF text
+  annotations can't carry mixed styling. Pick a font's Bold or Italic style
+  from the font list instead (for example "Arial Bold").
 
 ## Building a standalone Windows .exe
 

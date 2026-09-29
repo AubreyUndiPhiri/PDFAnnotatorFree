@@ -111,9 +111,9 @@ QPushButton:hover {{ background: {SURFACE_ALT}; }}
 QPushButton:pressed {{ background: {BORDER}; }}
 QPushButton:checked {{ background: {ACCENT_SOFT}; border-color: {ACCENT_SOFT_BORDER}; }}
 QPushButton:disabled {{ color: {ICON_DISABLED}; }}
-QPushButton#primary, QPushButton:default {{ background: {ACCENT}; border-color: {ACCENT}; color: #ffffff; font-weight: 600; }}
-QPushButton#primary:hover, QPushButton:default:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}
-QPushButton#primary:pressed, QPushButton:default:pressed {{ background: {ACCENT_PRESSED}; }}
+QPushButton#primary {{ background: {ACCENT}; border-color: {ACCENT}; color: #ffffff; font-weight: 600; }}
+QPushButton#primary:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}
+QPushButton#primary:pressed {{ background: {ACCENT_PRESSED}; }}
 QPushButton#icon {{ padding: 5px; min-width: 18px; }}
 
 /* ---- sidebar thumbnails */

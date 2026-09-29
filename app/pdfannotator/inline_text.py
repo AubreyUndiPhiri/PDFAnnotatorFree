@@ -6,7 +6,7 @@ width when the box was dragged out), previews the chosen font, size and
 colour at the current zoom, and emits `finished` on Esc or Ctrl+Enter.
 Clicking elsewhere on the page also finishes it (handled by DocumentTab)."""
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QTextCursor, QTextOption
+from PySide6.QtGui import QColor, QFontMetricsF, QTextCursor, QTextOption
 from PySide6.QtWidgets import QFrame, QTextEdit
 
 from . import fonts
@@ -48,9 +48,7 @@ class InlineTextEditor(QTextEdit):
     # ---- style
     def set_style(self, fontname, fontsize, color):
         self.fontname, self.fontsize, self.color = fontname, float(fontsize), QColor(color)
-        font = QFont()
-        font.setFamilies(fonts.preview_families(fontname))
-        font.setPixelSize(max(4, round(self.fontsize * self._px_per_pt)))
+        font = fonts.preview_font(fontname, round(self.fontsize * self._px_per_pt))
         self.setFont(font)
         self.document().setDefaultFont(font)
         self.setStyleSheet(f"QTextEdit#inlineText {{ color: {self.color.name()}; }}")

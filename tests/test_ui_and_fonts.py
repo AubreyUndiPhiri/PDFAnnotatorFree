@@ -138,9 +138,11 @@ def test_custom_font_text_is_a_movable_annotation(app, tmp_path, test_font):
     doc.save(out)
     reopened = fitz.open(out)
     rpage = reopened[0]
-    embedded = [f[3] for f in rpage.get_fonts()]
-    assert any("TestHand" in name for name in embedded), embedded
     saved = next(rpage.annots())
+    # The (subset) font lives in the text box's appearance, not the page
+    assert "F-TestHand" in _appearance_fonts(reopened, saved)
+    base_fonts = {reopened.xref_get_key(x, "BaseFont")[1] for x in range(1, reopened.xref_length())}
+    assert any("TestHand" in name for name in base_fonts), base_fonts
     assert saved.info["content"] == "HELLO WORLD\nSECOND LINE"
     assert pdf_ops.freetext_style(saved)["fontname"] == test_font
 

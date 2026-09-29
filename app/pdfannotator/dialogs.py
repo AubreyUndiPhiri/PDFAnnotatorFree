@@ -4,7 +4,7 @@ import tempfile
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QWidget, QLabel,
     QFormLayout, QLineEdit, QTableWidget, QTableWidgetItem, QDoubleSpinBox,
-    QSpinBox, QHeaderView, QComboBox, QColorDialog, QToolButton,
+    QSpinBox, QHeaderView, QComboBox, QColorDialog, QToolButton, QFileDialog, QMessageBox,
 )
 from PySide6.QtGui import QImage, QPainter, QPen, QColor, QIcon, QPixmap, QShortcut, QKeySequence
 from PySide6.QtCore import Qt, Signal, QSize, QRectF
@@ -276,9 +276,8 @@ class ToolStylesDialog(QDialog):
             table.setCellWidget(row, 3, opacity_spin)
 
             font_combo = QComboBox()
-            font_combo.addItems(fonts.available_fonts())
-            font_combo.setCurrentText(style.get("fontname", fonts.DEFAULT_FONT))
-            font_combo.currentTextChanged.connect(lambda v, t=tool: self.tool_styles[t].__setitem__("fontname", v))
+            fonts.fill_font_combo(font_combo, style.get("fontname", fonts.DEFAULT_FONT))
+            font_combo.textActivated.connect(lambda v, t=tool, c=font_combo: self._set_font(t, c, v))
             table.setCellWidget(row, 4, font_combo)
 
             fontsize_spin = QSpinBox()
@@ -288,7 +287,7 @@ class ToolStylesDialog(QDialog):
             fontsize_spin.valueChanged.connect(lambda v, t=tool: self.tool_styles[t].__setitem__("fontsize", v))
             table.setCellWidget(row, 5, fontsize_spin)
 
-        for col, width in ((1, 70), (2, 90), (3, 84), (4, 130), (5, 84)):
+        for col, width in ((1, 70), (2, 90), (3, 84), (4, 170), (5, 84)):
             table.setColumnWidth(col, width)
         layout.addWidget(table)
 
@@ -304,12 +303,161 @@ class ToolStylesDialog(QDialog):
         box.addWidget(widget, alignment=Qt.AlignCenter)
         return holder
 
+    def _set_font(self, tool, combo, name):
+        if name in fonts.available_fonts():
+            self.tool_styles[tool]["fontname"] = name
+        else:
+            combo.setCurrentText(self.tool_styles[tool].get("fontname", fonts.DEFAULT_FONT))
+
     def _pick_color(self, tool, btn):
         current = QColor(*self.tool_styles[tool]["color"])
         color = QColorDialog.getColor(current, self, "Choose Colour")
         if color.isValid():
             self.tool_styles[tool]["color"] = (color.red(), color.green(), color.blue())
             btn.setIcon(swatch_icon(color))
+
+
+# ---------------------------------------------------------------------------
+# Handwriting font
+# ---------------------------------------------------------------------------
+
+class HandwritingFontDialog(QDialog):
+    """Guided steps to turn a filled-in glyph sheet into a font the app can
+    use straight away: save the sheet, fill it in, choose the scan, create."""
+
+    fontCreated = Signal(str)  # family name
+
+    SAMPLE = "The quick brown fox jumps over the lazy dog 0123456789"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Create Handwriting Font")
+        self.setMinimumWidth(560)
+        self.scan_path = None
+        layout = _dialog_layout(self)
+        layout.addLayout(_header(
+            "Create your handwriting font",
+            "Turn your own handwriting into a font you can type with. It takes a sheet of paper and a pen.",
+        ))
+
+        form = QFormLayout()
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(12)
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignTop)
+
+        save_btn = QPushButton(icons.icon("print"), "Save Glyph Sheet...")
+        save_btn.clicked.connect(self._save_sheet)
+        form.addRow("1. Print", self._step("Save the sheet, then print it at 100% (actual size).", save_btn))
+        form.addRow("2. Write", self._step("Write one character in each box with a dark pen, sitting on the "
+                                           "lower dashed line. Leave a box empty to skip it."))
+        scan_btn = QPushButton(icons.icon("image"), "Choose Scan or Photo...")
+        scan_btn.clicked.connect(self._choose_scan)
+        self.scan_label = QLabel("No image chosen")
+        self.scan_label.setObjectName("muted")
+        self.scan_label.setWordWrap(True)
+        form.addRow("3. Scan", self._step("Scan it, or photograph it flat and in focus with all four black "
+                                          "corner squares visible.", scan_btn, self.scan_label))
+        self.name_edit = QLineEdit(fonts.HANDWRITING_FONT)
+        self.name_edit.setMaxLength(40)
+        form.addRow("Font name", self.name_edit)
+        layout.addLayout(form)
+
+        self.result_label = QLabel("")
+        self.result_label.setWordWrap(True)
+        self.result_label.setObjectName("muted")
+        self.preview = QLabel("")
+        self.preview.setWordWrap(True)
+        self.preview.setMinimumHeight(0)
+        self.preview.setStyleSheet(f"QLabel {{ background: {theme.SURFACE}; border: 1px solid {theme.BORDER};"
+                                   f" border-radius: 8px; padding: 12px; color: {theme.TEXT}; }}")
+        self.preview.hide()
+        layout.addWidget(self.preview)
+        layout.addWidget(self.result_label)
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        self.create_btn = _primary("Create Font")
+        self.create_btn.setEnabled(False)
+        self.create_btn.clicked.connect(self._create)
+        layout.addLayout(_button_row(self.cancel_btn, self.create_btn))
+
+    @staticmethod
+    def _step(text, *widgets):
+        holder = QWidget()
+        box = QVBoxLayout(holder)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(6)
+        label = QLabel(text)
+        label.setWordWrap(True)
+        box.addWidget(label)
+        for w in widgets:
+            box.addWidget(w, alignment=Qt.AlignLeft)
+        return holder
+
+    def _save_sheet(self):
+        from PySide6.QtCore import QStandardPaths, QUrl
+        from PySide6.QtGui import QDesktopServices
+        from .handwriting.sheet import make_sheet
+
+        docs = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
+        name = f"{self.name_edit.text().strip() or fonts.HANDWRITING_FONT}_glyph_sheet.pdf"
+        path, _ = QFileDialog.getSaveFileName(self, "Save Glyph Sheet", os.path.join(docs, name), "PDF Files (*.pdf)")
+        if not path:
+            return
+        make_sheet(path, self.name_edit.text().strip() or fonts.HANDWRITING_FONT)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _choose_scan(self):
+        from PySide6.QtCore import QStandardPaths
+
+        start = QStandardPaths.writableLocation(QStandardPaths.PicturesLocation)
+        path, _ = QFileDialog.getOpenFileName(self, "Choose the Scanned Sheet", start,
+                                              "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)")
+        if not path:
+            return
+        self.scan_path = path
+        self.scan_label.setText(os.path.basename(path))
+        self.create_btn.setEnabled(True)
+
+    def _create(self):
+        from PySide6.QtWidgets import QApplication
+        from .handwriting.builder import BuildError, build_font
+
+        family = "".join(ch for ch in self.name_edit.text().strip() if ch.isalnum() or ch in " -_") or fonts.HANDWRITING_FONT
+        out = fonts.USER_FONTS_DIR / f"{family}.ttf"
+        if out.exists():
+            resp = QMessageBox.question(self, "Replace Font", f'A font named "{family}" already exists. Replace it?')
+            if resp != QMessageBox.Yes:
+                return
+        self.result_label.setText("Reading your handwriting...")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.processEvents()
+        try:
+            result = build_font(self.scan_path, out, family)
+        except BuildError as e:
+            self.result_label.setText("")
+            QMessageBox.warning(self, "Couldn't Create the Font", str(e))
+            return
+        except Exception as e:
+            self.result_label.setText("")
+            QMessageBox.critical(self, "Couldn't Create the Font", f"Something went wrong reading the image:\n{e}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        family = fonts.install_font_file(result["path"])
+        self.preview.setFont(fonts.preview_font(family, 30))
+        self.preview.setText(self.SAMPLE)
+        self.preview.show()
+        summary = f'"{family}" is ready and now in every font list. {len(result["found"])} characters found.'
+        if result["skipped"]:
+            summary += f' Empty boxes skipped: {" ".join(result["skipped"])}'
+        self.result_label.setText(summary)
+        self.cancel_btn.hide()
+        self.create_btn.setText("Done")
+        self.create_btn.clicked.disconnect()
+        self.create_btn.clicked.connect(self.accept)
+        self.fontCreated.emit(family)
 
 
 # ---------------------------------------------------------------------------
