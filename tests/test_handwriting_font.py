@@ -80,3 +80,18 @@ def test_blank_photo_gives_a_clear_error(app, tmp_path):
 def test_empty_sheet_gives_a_clear_error(app, tmp_path):
     with pytest.raises(BuildError, match="No handwriting"):
         build_font(_filled_scan(tmp_path, skip="".join(L.CHARACTERS)), tmp_path / "x.ttf")
+
+
+def test_shipped_aupedean_font_is_complete():
+    from fontTools.ttLib import TTFont
+
+    path = fonts.FONTS_DIR / "AUPedean.ttf"
+    assert path.is_file(), "app/assets/fonts/AUPedean.ttf is missing"
+    font = TTFont(str(path))
+    cmap = font.getBestCmap()
+    for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?'\"-()/&":
+        assert ord(ch) in cmap, f"AUPedean has no glyph for {ch!r}"
+    letters = {cmap[ord(c)] for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"}
+    assert len(letters) == 26, "each letter needs its own glyph"
+    assert font["name"].getDebugName(1) == "AUPedean"
+    assert font["OS/2"].fsType == 0  # installable and embeddable

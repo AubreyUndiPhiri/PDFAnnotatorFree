@@ -142,7 +142,27 @@ uses, so the text looks the same in any PDF viewer and files stay small. The
 text can still be moved, resized and edited in this app. Other PDF editors
 that rewrite a box may fall back to Helvetica.
 
-### Creating AUPedean from your handwriting
+### The AUPedean font
+
+AUPedean ships with the app (`app/assets/fonts/AUPedean.ttf`) and is first in
+every font list. It's the AUPedean script, a letter-for-letter transcription
+of the English alphabet: typing `A` writes the AUPedean A, and so on.
+Lowercase uses the same letters. The 26 letters are traced from the
+handwritten original (`tools/font_builder/aupedean/source_photo.png`); see
+`tools/font_builder/aupedean/letter_key.png` for which letter is which.
+The script has no digits or punctuation, so those are simple strokes drawn
+at the same pen weight.
+
+To rebuild it (e.g. after changing the photo or the letter grouping):
+
+```
+venv\Scripts\python.exe tools\font_builder\aupedean\build_aupedean.py --preview tools\font_builder\aupedean\letter_key.png
+```
+
+To use AUPedean in other programs (Word and so on), double-click
+`AUPedean.ttf` and choose **Install**.
+
+### Creating a handwriting font from a glyph sheet
 
 In the app: **Tools > Handwriting Font > Create Font from Your
 Handwriting...**, or pick **Create AUPedean from your handwriting...** at the
