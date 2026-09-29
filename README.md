@@ -1,4 +1,4 @@
-# Aupedian Annotators
+# Aupedean Annotator
 
 A Windows PDF annotation app for reviewing and marking up documents: notes,
 highlights, freehand ink, shapes, stamps, signatures, measurements and page
@@ -11,7 +11,7 @@ The latest packaged Windows build is on the
 [Releases page](https://github.com/AubreyUndiPhiri/PDFAnnotatorFree/releases).
 The most recent zip published there is
 [PDFAnnotatorFree-v2.0.0-win64.zip](https://github.com/AubreyUndiPhiri/PDFAnnotatorFree/releases/download/v2.0.0/PDFAnnotatorFree-v2.0.0-win64.zip).
-It predates the redesign; the current build is in `dist/AupedianAnnotators/`.
+It predates the redesign; the current build is in `dist/AupedeanAnnotator/`.
 
 ## Run from source
 
@@ -117,7 +117,7 @@ Single-letter shortcuts are shown in brackets.
 - Icons are SVG files in `app/assets/icons/`, drawn in currentColor and tinted
   at runtime (`app/pdfannotator/icons.py`). To change or add icons, edit
   `tools/make_icons.py` and run `python tools\make_icons.py`.
-- The app icon is `app/assets/aupedian_annotators.svg`. After editing it,
+- The app icon is `app/assets/aupedean_annotator.svg`. After editing it,
   run `python tools\make_app_icon.py` to regenerate the Windows `.ico` used
   by the exe.
 
@@ -126,7 +126,7 @@ Single-letter shortcuts are shown in brackets.
 The toolbar **Font** box and **Tools > Tool Styles** list, in labelled sections:
 
 1. **Your handwriting fonts** (such as AUPedean), from `app/assets/fonts/` and
-   `%APPDATA%\AupedianAnnotators\fonts\`.
+   `%APPDATA%\AupedeanAnnotator\fonts\`.
 2. **Helvetica, Times, Courier**: the standard PDF fonts, saved as plain
    text annotations.
 3. **84 bundled font families (209 styles)** that ship with the app, so they
@@ -183,7 +183,7 @@ top of the font list. The window walks you through it:
 3. Scan it, or photograph it flat and in focus with all four black corner
    squares visible, then **Choose Scan or Photo...** and **Create Font**.
 
-The font is saved to `%APPDATA%\AupedianAnnotators\fonts\AUPedean.ttf` and
+The font is saved to `%APPDATA%\AupedeanAnnotator\fonts\AUPedean.ttf` and
 appears in every font list straight away, with no restart or rebuild. Doing
 it again with the same name replaces it. Lowercase letters reuse the
 capitals. A copy of the sheet is also at
@@ -215,9 +215,9 @@ A few things can't be meaningfully checked by the automated tests:
 ## Building a standalone Windows .exe
 
 ```
-venv\Scripts\pyinstaller.exe --noconfirm PDFAnnotatorFree.spec
+venv\Scripts\pyinstaller.exe --noconfirm AupedeanAnnotator.spec
 ```
 
 The spec bundles `app/assets` (icons, fonts, app icon) and sets the exe icon.
-The result is `dist\AupedianAnnotators\AupedianAnnotators.exe`, a folder you
+The result is `dist\AupedeanAnnotator\AupedeanAnnotator.exe`, a folder you
 can zip and share; no installation or licence needed.

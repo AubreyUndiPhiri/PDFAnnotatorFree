@@ -19,7 +19,7 @@ from .tools import (
     TOOL_GROUPS, WIDTH_TOOLS, FONT_TOOLS, UNIT_TOOLS,
 )
 
-APP_TITLE = "Aupedian Annotators"
+APP_TITLE = "Aupedean Annotator"
 
 
 def resource_path(*parts):
@@ -45,7 +45,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         theme.apply()
         self.setWindowTitle(APP_TITLE)
-        self.setWindowIcon(QIcon(resource_path("assets", "aupedian_annotators.svg")))
+        self.setWindowIcon(QIcon(resource_path("assets", "aupedean_annotator.svg")))
 
         fonts.register_custom_fonts()
         fonts.load_system_fonts()
@@ -846,7 +846,12 @@ class MainWindow(QMainWindow):
         tab = self.current_tab()
         if not tab or not tab.document.is_open:
             return
-        templates_dir = os.path.join(os.path.expanduser("~"), "Documents", "AupedianAnnotators", "Templates")
+        templates_dir = os.path.join(os.path.expanduser("~"), "Documents", "AupedeanAnnotator", "Templates")
+        old_templates = os.path.join(os.path.expanduser("~"), "Documents", "AupedianAnnotators", "Templates")
+        if os.path.isdir(old_templates) and not os.path.exists(templates_dir):
+            import shutil  # carry templates over from before the app was renamed
+
+            shutil.copytree(old_templates, templates_dir)
         os.makedirs(templates_dir, exist_ok=True)
         self._save_tab_as(tab, directory=templates_dir)
 

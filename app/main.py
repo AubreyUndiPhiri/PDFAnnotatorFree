@@ -10,12 +10,12 @@ def main():
     if sys.platform == "win32":
         # Own taskbar identity, so Windows shows our icon instead of Python's
         import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("AupedianAnnotators.App")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("AupedeanAnnotator.App")
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Aupedian Annotators")
-    app.setOrganizationName("AupedianAnnotators")
-    app.setWindowIcon(QIcon(resource_path("assets", "aupedian_annotators.svg")))
+    app.setApplicationName("Aupedean Annotator")
+    app.setOrganizationName("AupedeanAnnotator")
+    app.setWindowIcon(QIcon(resource_path("assets", "aupedean_annotator.svg")))
     theme.apply(app)
 
     window = MainWindow()

@@ -1,4 +1,4 @@
-"""Render app/assets/aupedian_annotators.svg to the multi-size Windows .ico
+"""Render app/assets/aupedean_annotator.svg to the multi-size Windows .ico
 used by the PyInstaller build.
 
     python tools/make_app_icon.py
@@ -16,8 +16,8 @@ from PySide6.QtGui import QGuiApplication, QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
 
 ASSETS = Path(__file__).resolve().parents[1] / "app" / "assets"
-SVG = ASSETS / "aupedian_annotators.svg"
-ICO = ASSETS / "aupedian_annotators.ico"
+SVG = ASSETS / "aupedean_annotator.svg"
+ICO = ASSETS / "aupedean_annotator.ico"
 SIZES = [16, 24, 32, 48, 64, 128, 256]
 
 

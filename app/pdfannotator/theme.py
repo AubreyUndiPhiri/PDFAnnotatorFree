@@ -37,7 +37,7 @@ PAGE_SHADOW = QColor(15, 23, 42, 38)
 FONT_FAMILY = "Segoe UI"
 FONT_SIZE = 9
 
-_CACHE = Path(tempfile.gettempdir()) / "aupedian-annotators-ui"
+_CACHE = Path(tempfile.gettempdir()) / "aupedean-annotator-ui"
 _applied = False
 
 

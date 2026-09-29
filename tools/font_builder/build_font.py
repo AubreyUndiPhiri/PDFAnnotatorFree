@@ -5,7 +5,7 @@ version of Tools > Handwriting Font > Create Font from Scan... in the app).
         [--out app/assets/fonts/AUPedean.ttf] [--family AUPedean] [--debug debug_dir]
 
 By default the font is saved to the per-user fonts folder the app reads
-(%APPDATA%\\AupedianAnnotators\\fonts). Use --out app/assets/fonts/... to ship
+(%APPDATA%\\AupedeanAnnotator\\fonts). Use --out app/assets/fonts/... to ship
 it inside the app instead.
 """
 import argparse

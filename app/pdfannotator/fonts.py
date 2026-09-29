@@ -19,7 +19,8 @@ import sys
 from pathlib import Path
 
 FONTS_DIR = Path(__file__).resolve().parents[1] / "assets" / "fonts"
-APP_DATA = Path(os.environ.get("APPDATA") or Path.home()) / "AupedianAnnotators"
+APP_DATA = Path(os.environ.get("APPDATA") or Path.home()) / "AupedeanAnnotator"
+_OLD_APP_DATA = APP_DATA.parent / "AupedianAnnotators"   # the app's name before it was renamed
 USER_FONTS_DIR = APP_DATA / "fonts"
 _SYSTEM_CACHE = APP_DATA / "system_fonts.json"
 _CACHE_VERSION = 1
@@ -66,6 +67,7 @@ def register_custom_fonts() -> dict[str, str]:
     font file was added. Needs a QGuiApplication."""
     from PySide6.QtGui import QFontDatabase
 
+    _migrate_old_user_fonts()
     known = {info["path"] for info in _custom_fonts.values()}
     for folder in (FONTS_DIR, USER_FONTS_DIR):
         if not folder.is_dir():
@@ -76,6 +78,20 @@ def register_custom_fonts() -> dict[str, str]:
             _add_custom(path)
     register_library_fonts()
     return {name: info["path"] for name, info in _custom_fonts.items()}
+
+
+def _migrate_old_user_fonts():
+    """Fonts created before the app was renamed live in the old folder; copy
+    them to the new one once, so nobody loses their handwriting font."""
+    old = _OLD_APP_DATA / "fonts"
+    if not old.is_dir() or USER_FONTS_DIR.is_dir():
+        return
+    try:
+        import shutil
+
+        shutil.copytree(old, USER_FONTS_DIR)
+    except OSError:
+        pass
 
 
 def register_library_fonts():
