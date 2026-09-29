@@ -3,7 +3,7 @@ from PySide6.QtWidgets import QWidget
 from PySide6.QtGui import QPainter, QPixmap, QImage, QPen, QColor
 from PySide6.QtCore import Qt, QPoint, QRect
 
-from . import pdf_ops
+from . import pdf_ops, theme
 from .tools import Tool
 
 # Tools that collect a freehand point path while the mouse is dragging
@@ -41,6 +41,7 @@ class PageWidget(QWidget):
 
         self._pan_last_pos = None
         self._flash_rect = None
+        self.floating_text_editor = None
 
         self.ensure_placeholder()
 
@@ -81,8 +82,8 @@ class PageWidget(QWidget):
         if self.rendered and self.pixmap is not None:
             painter.drawPixmap(0, 0, self.pixmap)
         else:
-            painter.fillRect(self.rect(), QColor(235, 235, 235))
-            painter.setPen(QColor(160, 160, 160))
+            painter.fillRect(self.rect(), QColor(theme.SURFACE))
+            painter.setPen(QColor(theme.BORDER))
             painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
 
         if self.rendered:
@@ -95,7 +96,7 @@ class PageWidget(QWidget):
                     offset = QPoint(0, 0)
                     if self.controller.select_dragging:
                         offset = self.controller.select_offset_px
-                    pen = QPen(QColor(0, 120, 255), 2, Qt.DashLine)
+                    pen = QPen(theme.SELECTION, 1.5, Qt.DashLine)
                     painter.setPen(pen)
                     painter.drawRect(int(r.x0) + offset.x(), int(r.y0) + offset.y(),
                                       max(1, int(r.width)), max(1, int(r.height)))
@@ -106,7 +107,7 @@ class PageWidget(QWidget):
             try:
                 r = fitz.Rect(self._flash_rect) * pdf_ops.coord_matrix(self.page(), self.zoom())
                 r = r.normalize()
-                pen = QPen(QColor(255, 200, 0), 3)
+                pen = QPen(theme.SEARCH_FLASH, 3)
                 painter.setPen(pen)
                 painter.drawRect(int(r.x0), int(r.y0), max(1, int(r.width)), max(1, int(r.height)))
             except Exception:
@@ -170,6 +171,10 @@ class PageWidget(QWidget):
 
         if tool == Tool.NOTE:
             self.controller.place_note(self, pos)
+            return
+
+        if tool in (Tool.TEXTBOX, Tool.FORMULA):
+            self._open_floating_text_editor(pos)
             return
 
         if tool == Tool.ZOOM:
@@ -248,6 +253,36 @@ class PageWidget(QWidget):
                 self.update()
                 return
         super().keyPressEvent(event)
+
+    def _open_floating_text_editor(self, pos):
+        if self.floating_text_editor is not None:
+            self.floating_text_editor.close()
+            self.floating_text_editor = None
+
+        from .dialogs import FloatingTextEditor
+
+        self.floating_text_editor = FloatingTextEditor(
+            self,
+            initial_text="",
+            initial_color=self.controller.current_color,
+            initial_fontsize=self.controller.current_fontsize,
+            initial_fontname=self.controller.current_fontname,
+        )
+        self.floating_text_editor.set_apply_callback(
+            lambda text, color, fontsize: self.controller.commit_inline_text(
+                self,
+                self.to_pdf_point(pos),
+                text,
+                color,
+                fontsize,
+                self.controller.current_tool,
+            )
+        )
+        self.floating_text_editor.set_cancel_callback(lambda: None)
+        self.floating_text_editor.move(pos.x() + 16, max(12, pos.y() - 10))
+        self.floating_text_editor.show()
+        self.floating_text_editor.raise_()
+        self.floating_text_editor.activateWindow()
 
     def _finish_polygon(self):
         if len(self._polygon_points_px) < 3:

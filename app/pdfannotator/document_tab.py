@@ -2,18 +2,37 @@ import os
 import fitz
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QScrollArea, QSplitter, QFileDialog, QMessageBox,
+    QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QFileDialog, QMessageBox,
     QInputDialog,
 )
-from PySide6.QtGui import QGuiApplication, QImage, QPixmap
+from PySide6.QtGui import QGuiApplication, QImage, QPixmap, QPainter, QColor
 from PySide6.QtCore import Qt, QPoint, QTimer
 
 from .document import PDFDocument
 from .page_widget import PageWidget
 from .thumbnail_panel import ThumbnailPanel
 from .guide_overlay import GuideLine, LaserDot
+from .dialogs import AdvancedTextEditorDialog
 from .tools import Tool, TOOL_HINTS, UNITS
-from . import pdf_ops
+from . import pdf_ops, theme
+
+
+class PageCanvas(QWidget):
+    """Grey backdrop behind the pages that paints a soft shadow under each one."""
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(theme.CANVAS))
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        for child in self.children():
+            if isinstance(child, PageWidget) and child.isVisible():
+                r = child.geometry()
+                for spread, alpha in ((6, 10), (4, 16), (2, 26)):
+                    shadow = QColor(theme.PAGE_SHADOW)
+                    shadow.setAlpha(alpha)
+                    painter.setBrush(shadow)
+                    painter.drawRoundedRect(r.adjusted(-spread, -spread + 2, spread, spread + 2), spread, spread)
 
 
 class DocumentTab(QWidget):
@@ -64,6 +83,10 @@ class DocumentTab(QWidget):
         return self.window.current_fontsize
 
     @property
+    def current_fontname(self):
+        return self.window.current_fontname
+
+    @property
     def current_opacity(self):
         return self.window.current_opacity
 
@@ -99,28 +122,27 @@ class DocumentTab(QWidget):
         self.thumbnails.pageActivated.connect(self.go_to_page)
         self.thumbnails.pagesReordered.connect(self.reorder_pages)
 
-        self.pages_container = QWidget()
+        self.pages_container = PageCanvas()
+        self.pages_container.setObjectName("canvasContents")
         self.pages_layout = QVBoxLayout(self.pages_container)
-        self.pages_layout.setSpacing(16)
-        self.pages_layout.setContentsMargins(16, 16, 16, 16)
+        self.pages_layout.setSpacing(20)
+        self.pages_layout.setContentsMargins(24, 24, 24, 24)
         self.pages_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
 
         self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName("canvas")
+        self.scroll_area.setFrameShape(QScrollArea.NoFrame)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setWidget(self.pages_container)
         self.scroll_area.verticalScrollBar().valueChanged.connect(self.update_visible_pages)
 
         self.laser_dot = LaserDot(self.pages_container)
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self.thumbnails)
-        splitter.addWidget(self.scroll_area)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-
-        outer = QVBoxLayout(self)
+        outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(splitter)
+        outer.setSpacing(0)
+        outer.addWidget(self.thumbnails)
+        outer.addWidget(self.scroll_area, 1)
 
         self.new_document()
 
@@ -201,11 +223,20 @@ class DocumentTab(QWidget):
             return self.selected[0][0]
         if self.page_layout_mode == "single":
             return self.current_single_page_index
-        return 0
+        # Continuous: the page under the middle of the viewport
+        if not self.page_widgets:
+            return 0
+        middle = self.scroll_area.verticalScrollBar().value() + self.scroll_area.viewport().height() // 2
+        for i, pw in enumerate(self.page_widgets):
+            if middle <= pw.geometry().bottom() + self.pages_layout.spacing():
+                return i
+        return len(self.page_widgets) - 1
 
     def update_visible_pages(self):
         if not self.page_widgets:
             return
+        if hasattr(self.window, "on_current_page_changed"):
+            self.window.on_current_page_changed(self)
         if self.page_layout_mode == "single":
             pw = self.page_widgets[self.current_single_page_index]
             if not pw.rendered:
@@ -629,6 +660,21 @@ class DocumentTab(QWidget):
         info = annot.info
         self.set_hint(f"{annot.type[1]} — {info.get('content', '') or '(no content)'}")
 
+    def commit_inline_text(self, widget, anchor_pdf_point, text, color, fontsize, tool):
+        if not text or not text.strip():
+            return
+        page = widget.page()
+        default_w, default_h = (180, 44) if tool == Tool.FORMULA else (180, 42)
+        rect = fitz.Rect(anchor_pdf_point.x, anchor_pdf_point.y, anchor_pdf_point.x + default_w, anchor_pdf_point.y + default_h)
+        pdf_ops.add_freetext(page, rect, text, color, fontsize, self.current_fontname)
+        self.window.set_tool(Tool.SELECT)
+        if widget.floating_text_editor is not None:
+            widget.floating_text_editor.close()
+            widget.floating_text_editor = None
+        self.document.snapshot()
+        widget.render()
+        self.refresh_thumbnail(widget.page_index)
+
     def commit_drag_tool(self, widget, tool, p1, p2):
         page = widget.page()
         rect = fitz.Rect(p1, p2)
@@ -655,16 +701,37 @@ class DocumentTab(QWidget):
             elif tool == Tool.ARROW:
                 pdf_ops.add_line(page, p1, p2, self.current_color, self.current_width, arrow=True)
             elif tool == Tool.TEXTBOX:
-                text, ok = QInputDialog.getMultiLineText(self, "Add Text Box", "Text:")
-                if not ok or not text.strip():
+                editor = AdvancedTextEditorDialog(
+                    initial_text="",
+                    initial_color=self.current_color,
+                    initial_fontsize=self.current_fontsize,
+                    initial_fontname=self.current_fontname,
+                    parent=self,
+                )
+                if editor.exec() != editor.Accepted:
                     return
-                pdf_ops.add_freetext(page, rect, text, self.current_color, self.current_fontsize)
+                text = editor.text_value()
+                if not text.strip():
+                    return
+                pdf_ops.add_freetext(page, rect, text, editor.selected_color(), editor.selected_fontsize(),
+                                     editor.selected_fontname(), editor.selected_alignment())
                 self.window.set_tool(Tool.SELECT)
             elif tool == Tool.FORMULA:
-                text, ok = QInputDialog.getMultiLineText(self, "Add Formula", "Enter formula/equation text:")
-                if not ok or not text.strip():
+                editor = AdvancedTextEditorDialog(
+                    initial_text="",
+                    initial_color=self.current_color,
+                    initial_fontsize=max(self.current_fontsize, 14),
+                    initial_fontname=self.current_fontname,
+                    parent=self,
+                )
+                editor.setWindowTitle("Formula")
+                if editor.exec() != editor.Accepted:
                     return
-                pdf_ops.add_freetext(page, rect, text, self.current_color, self.current_fontsize)
+                text = editor.text_value()
+                if not text.strip():
+                    return
+                pdf_ops.add_freetext(page, rect, text, editor.selected_color(), editor.selected_fontsize(),
+                                     editor.selected_fontname(), editor.selected_alignment())
                 self.window.set_tool(Tool.SELECT)
             elif tool == Tool.STAMP:
                 pdf_ops.add_stamp(page, rect, self.current_stamp_name)
@@ -705,13 +772,22 @@ class DocumentTab(QWidget):
         if annot.type[0] not in (fitz.PDF_ANNOT_FREETEXT, fitz.PDF_ANNOT_TEXT):
             return
         old_text = annot.info.get("content", "")
-        text, ok = QInputDialog.getMultiLineText(self, "Edit Text", "Content:", old_text)
-        if ok:
-            annot.set_info(content=text)
-            annot.update()
-            self.document.snapshot()
-            widget.render()
-            self.refresh_thumbnail(widget.page_index)
+        editor = AdvancedTextEditorDialog(
+            initial_text=old_text,
+            initial_color=self.current_color,
+            initial_fontsize=max(int(getattr(annot, "fontsize", self.current_fontsize) or self.current_fontsize), 10),
+            parent=self,
+        )
+        editor.setWindowTitle("Edit Text")
+        if editor.exec() != editor.Accepted:
+            return
+        text = editor.text_value()
+        annot.set_info(content=text)
+        annot.set_colors(stroke=pdf_ops.color_to_rgb(editor.selected_color()))
+        annot.update()
+        self.document.snapshot()
+        widget.render()
+        self.refresh_thumbnail(widget.page_index)
 
     def delete_selected(self):
         if not self.selected:

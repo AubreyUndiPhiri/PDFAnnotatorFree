@@ -1,9 +1,9 @@
 import fitz
 from PySide6.QtWidgets import QListWidget, QListWidgetItem, QAbstractItemView, QMenu
-from PySide6.QtGui import QImage, QPixmap, QIcon
+from PySide6.QtGui import QImage, QPixmap, QIcon, QPainter, QColor
 from PySide6.QtCore import Qt, QSize, Signal
 
-from . import pdf_ops
+from . import icons, pdf_ops, theme
 
 
 class ThumbnailPanel(QListWidget):
@@ -13,14 +13,17 @@ class ThumbnailPanel(QListWidget):
     def __init__(self, controller, parent=None):
         super().__init__(parent)
         self.controller = controller
+        self.setObjectName("thumbnails")
         self.setViewMode(QListWidget.IconMode)
         self.setFlow(QListWidget.TopToBottom)
-        self.setIconSize(QSize(120, 160))
+        self.setIconSize(QSize(116, 150))
         self.setResizeMode(QListWidget.Adjust)
         self.setMovement(QListWidget.Snap)
         self.setDragDropMode(QAbstractItemView.InternalMove)
-        self.setSpacing(8)
-        self.setFixedWidth(160)
+        self.setSpacing(4)
+        self.setFixedWidth(176)
+        self.setUniformItemSizes(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._suppress_reorder_signal = False
         self.itemClicked.connect(self._on_item_clicked)
         self.model().rowsMoved.connect(self._on_rows_moved)
@@ -33,7 +36,7 @@ class ThumbnailPanel(QListWidget):
         doc = self.controller.document
         if doc.is_open:
             for i in range(doc.page_count):
-                item = QListWidgetItem(f"Page {i + 1}")
+                item = QListWidgetItem(str(i + 1))
                 item.setIcon(QIcon(self._thumb(i)))
                 item.setData(Qt.UserRole, i)
                 item.setTextAlignment(Qt.AlignHCenter)
@@ -49,7 +52,12 @@ class ThumbnailPanel(QListWidget):
         mat = pdf_ops.render_matrix(0.2)
         pix = page.get_pixmap(matrix=mat, alpha=False)
         img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888).copy()
-        return QPixmap.fromImage(img)
+        framed = QPixmap.fromImage(img)
+        painter = QPainter(framed)
+        painter.setPen(QColor(theme.BORDER_STRONG))
+        painter.drawRect(framed.rect().adjusted(0, 0, -1, -1))
+        painter.end()
+        return framed
 
     def _on_item_clicked(self, item):
         self.pageActivated.emit(item.data(Qt.UserRole))
@@ -66,12 +74,13 @@ class ThumbnailPanel(QListWidget):
             return
         index = item.data(Qt.UserRole)
         menu = QMenu(self)
-        rotate_left = menu.addAction("Rotate Left")
-        rotate_right = menu.addAction("Rotate Right")
+        rotate_left = menu.addAction(icons.icon("rotate-left"), "Rotate Left")
+        rotate_right = menu.addAction(icons.icon("rotate-right"), "Rotate Right")
         menu.addSeparator()
-        insert_after = menu.addAction("Insert Blank Page After")
-        extract = menu.addAction("Extract to New PDF...")
-        delete = menu.addAction("Delete Page")
+        insert_after = menu.addAction(icons.icon("page-add"), "Insert Blank Page After")
+        extract = menu.addAction(icons.icon("page-extract"), "Extract to New PDF...")
+        menu.addSeparator()
+        delete = menu.addAction(icons.icon("page-delete"), "Delete Page")
         action = menu.exec(self.mapToGlobal(pos))
         if action == rotate_left:
             self.controller.rotate_page(index, -90)

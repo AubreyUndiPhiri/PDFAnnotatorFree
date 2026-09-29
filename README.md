@@ -1,111 +1,166 @@
-# PDF Annotator Free
+# Aupedian Annotators
 
-A free, open Windows desktop PDF annotator built to match the full UI of the
-commercial "PDF Annotator" app — multi-document tabs, the full tool palette,
-and File/Edit/Tool/View menu parity. All edits are written as standard PDF
-annotations via PyMuPDF, so the resulting files open correctly in any PDF
-viewer.
+A Windows PDF annotation app for reviewing and marking up documents: notes,
+highlights, freehand ink, shapes, stamps, signatures, measurements and page
+editing. Annotations are written as standard PDF annotations with PyMuPDF,
+so the files open correctly in any PDF viewer.
+
+## Download
+
+The latest packaged Windows build is on the
+[Releases page](https://github.com/AubreyUndiPhiri/PDFAnnotatorFree/releases).
+The most recent zip published there is
+[PDFAnnotatorFree-v2.0.0-win64.zip](https://github.com/AubreyUndiPhiri/PDFAnnotatorFree/releases/download/v2.0.0/PDFAnnotatorFree-v2.0.0-win64.zip).
+It predates the redesign; the current build is in `dist/AupedianAnnotators/`.
 
 ## Run from source
 
 ```
+python -m venv venv
+venv\Scripts\pip.exe install -r requirements.txt
 venv\Scripts\python.exe app\main.py
-
-https://github.com/AubreyUndiPhiri/PDFAnnotatorFree/releases/download/v2.0.0/PDFAnnotatorFree-v2.0.0-win64.zip
 ```
 
-## Run the automated smoke test
-
-Simulates real mouse drags/clicks/keystrokes against the actual widgets (every
-tool, multi-select, cut/copy/paste, melt/remove annotations, multi-tab
-isolation, print-to-PDF, save/reload), with no display required:
+## Tests
 
 ```
 venv\Scripts\python.exe tests\test_smoke.py
+venv\Scripts\python.exe -m pytest tests
 ```
 
-## Features
+`test_smoke.py` drives the real widgets with simulated mouse drags, clicks and
+keystrokes (every tool, multi-select, cut/copy/paste, flatten/remove
+annotations, multi-tab isolation, print-to-PDF, save/reload) and needs no
+display. The pytest suite adds checks for fonts and icons.
 
-**Tabs**: multiple PDFs open at once (File > New Document / Open), each with
-its own undo history, zoom, and page layout; Window menu lists open tabs.
+## Interface
 
-**Tools** (toolbar buttons + single-letter shortcuts):
-- **Select** (U) — click to select (Ctrl+click to multi-select), drag to
-  move, `Delete`/`Backspace` to remove, double-click text/notes to edit.
-- **Extract Text** (X) — drag across text to copy it to the clipboard.
-- **Pan** (N) — drag to scroll.
-- **Zoom** (Z) — left-click to zoom in, right-click to zoom out, centered on
-  the cursor.
-- **Highlight / Underline / Strikeout** — drag across a line of text.
-- **Note** — click to drop a sticky-note comment.
-- **Pen** (P) — freehand drawing. **Marker** (M) — translucent highlighter
+- **Main toolbar**: open, save, print, undo/redo, insert image, draw
+  signature, find, page thumbnails toggle; zoom (presets, fit width, fit
+  page) and page navigation on the right.
+- **Tools toolbar**: every tool as an icon (hover for its name, shortcut and
+  how to use it), followed by the options for the active tool. It only shows
+  what that tool uses: colour for all styled tools, width for pens and
+  shapes, font and size for text, stamp type for stamps, unit for
+  measurements.
+- **Status bar**: what the active tool does, the tool name, the current page
+  and the zoom level.
+- **Page thumbnails** (left): click to jump, drag to reorder, right-click to
+  rotate, insert, extract or delete a page.
+
+## Tools
+
+Single-letter shortcuts are shown in brackets.
+
+- **Select** (U): click to select (Ctrl+click for more), drag to move,
+  `Delete`/`Backspace` to remove, double-click text or notes to edit.
+- **Extract Text** (X): drag across text to copy it to the clipboard.
+- **Pan** (N): drag to scroll.
+- **Zoom** (Z): left-click to zoom in, right-click to zoom out, centred on the
+  cursor.
+- **Highlight / Underline / Strikeout**: drag across a line of text.
+- **Note**: click to add a sticky-note comment.
+- **Pen** (P): freehand drawing. **Marker** (M): translucent highlighter
   stroke.
-- **Text** (T) / **Formula** — drag to size a box, then type (Formula labels
-  the prompt for equations; both currently produce a plain text annotation).
-- **Stamp** (A) — named stamps (Approved, Draft, Confidential, ...).
-- **Line** (L) / **Arrow** (W) / **Rectangle** (R) / **Ellipse** (I) —
-  drag to draw.
-- **Polygon** (G) — click to add points, double-click or Enter to finish,
+- **Text** (T) / **Formula**: drag to size a box, then type. Choose the font,
+  size, colour and alignment in the editor. Formula text is plain text, not
+  rendered LaTeX.
+- **Stamp** (A): named stamps (Approved, Draft, Confidential, ...).
+- **Line** (L) / **Arrow** (W) / **Rectangle** (R) / **Ellipse** (I): drag to
+  draw.
+- **Polygon** (G): click to add points, double-click or Enter to finish,
   Escape to cancel.
-- **Dimension** (D) — drag to measure and permanently label a distance.
-- **Eraser** (E) — drag over annotations to delete them.
-- **Lasso Select** (S) — drag a freehand loop to multi-select everything
-  inside it, then move or delete them together.
-- **Snapshot** (H) — drag a region to copy it to the clipboard as an image.
-- **Crop** (C) — drag a region to crop the page to it.
-- **Measure** (B) — live distance readout while dragging; nothing is added
-  to the page.
-- **Laser Pointer** (O) / **Pointer** (V) — presentation aids; Laser Pointer
-  shows a glowing dot, Pointer is a read-only inspector. Neither touches the
-  PDF.
-- **Insert Image... / Draw Signature...** — place a logo or a mouse-drawn
-  signature.
-- Right-click any tool button to pin/unpin it under **Tool > Favorites**.
-  **Tool > Tool Styles...** edits every tool's remembered color/width/
-  opacity/font size in one table.
+- **Dimension** (D): drag to measure and permanently label a distance.
+- **Eraser** (E): drag over annotations to delete them.
+- **Lasso Select** (S): draw a loop to select everything inside it.
+- **Snapshot** (H): drag a region to copy it to the clipboard as an image.
+- **Crop** (C): drag a region to crop the page to it.
+- **Measure** (B): live distance readout while dragging; nothing is added.
+- **Laser Pointer** (O) / **Pointer** (V): presentation aids that never
+  change the PDF.
+- **Insert Image / Draw Signature**: place a logo or a hand-drawn signature.
+- Right-click any tool button to pin it under **Tools > Favorites**.
+  **Tools > Tool Styles** edits every tool's default colour, width, opacity,
+  font and font size in one table.
 
-**Edit menu**: Undo/Redo, Cut/Copy/Paste/Paste Without Formatting (works
-across tabs), Delete, Find (Ctrl+F, wraps across pages), Insert Image,
-Selection (Select All on Page / Deselect / Invert), Page (insert/delete/
-rotate/extract), Document (combine/split/properties), Melt All Annotations
-(permanently flattens annotations into the page via PyMuPDF's `bake()`),
-Remove All Annotations.
+## Menus
 
-**View menu**: Zoom (editable presets), Full Screen / Full Screen in Window,
-Actual Size / Fit to Size / Fit to Width, Page Layout (Single Page /
-Continuous), Auxiliary Lines (draggable non-printing guides), Go to
-(first/prev/next/last/page number), Hide Annotations, Sidebar toggle,
-Toolbars toggle.
+- **File**: New, Open (each file gets its own tab), Save / Save As / Save All
+  / Save as Template, Combine Files, Split Every Page to Separate Files,
+  Properties (metadata), Send Mail (opens your mail client; attach the file
+  yourself, Windows can't do it automatically), Print, Close / Close All,
+  Exit.
+- **Edit**: Undo/Redo, Cut/Copy/Paste/Paste Without Formatting (works across
+  tabs), Delete, Find (Ctrl+F, wraps across pages; Enter for next,
+  Shift+Enter for previous), Insert Image, Draw Signature, Selection, Page
+  (insert, delete, rotate, extract the current page), Flatten All
+  Annotations (burns them into the page with PyMuPDF's `bake()`), Remove All
+  Annotations.
+- **Tools**: every tool, Favorites, Tool Styles.
+- **View**: zoom, Actual Size / Fit Page / Fit Width, Full Screen, Page
+  Layout (Single Page / Continuous), Go To, Guides (draggable non-printing
+  alignment lines), Hide Annotations, Page Thumbnails (F4), Toolbars.
+- **Window**: switch between open documents.
 
-**File menu**: New Document, Combine Files (merge PDFs in), Open (each file
-becomes its own tab), Save/Save As/Save as Template/Save All, Close/Close
-All, Properties (metadata editor), Send Mail (opens your mail client — it
-cannot auto-attach the file on Windows, so attach it manually), Print
-(via Qt's print pipeline), Split Every Page to Separate Files, Exit.
+## Look and feel
 
-**Page panel** (left sidebar): drag thumbnails to reorder pages; right-click
-for rotate / insert / extract / delete.
+- Colours, fonts and the style sheet are defined once in
+  `app/pdfannotator/theme.py`; dialogs and painted overlays use the same
+  values.
+- Icons are SVG files in `app/assets/icons/`, drawn in currentColor and tinted
+  at runtime (`app/pdfannotator/icons.py`). To change or add icons, edit
+  `tools/make_icons.py` and run `python tools\make_icons.py`.
+- The app icon is `app/assets/aupedian_annotators.svg`. After editing it,
+  run `python tools\make_app_icon.py` to regenerate the Windows `.ico` used
+  by the exe.
+
+## Fonts (including the custom AUPedean font)
+
+The toolbar **Font** dropdown and the text editor offer Helvetica, Times,
+Courier, plus every `.ttf`/`.otf` file in `app/assets/fonts/`. The built-in
+three are saved as editable text annotations. Custom fonts are embedded in the
+PDF and drawn onto the page, so they display correctly in any PDF viewer, but
+that text can't be moved or edited afterward (undo still works).
+
+To create `AUPedean.ttf` from your own handwriting:
+
+1. Print `tools/font_builder/AUPedean_glyph_sheet.pdf` at 100% scale
+   (regenerate it with `python tools\font_builder\make_template.py`).
+2. Write one character per box in dark pen, sitting on the lower dashed line.
+   Leave any box empty to skip it.
+3. Scan it, or photograph it flat, sharp and well lit, with all four black
+   corner squares in view.
+4. Build the font into the app:
+
+   ```
+   venv\Scripts\python.exe tools\font_builder\build_font.py path\to\scan.jpg
+   ```
+
+   This writes `app/assets/fonts/AUPedean.ttf`. Add `--debug out_dir` to
+   save the straightened sheet and each glyph mask if something looks off.
+   Lowercase letters reuse the capitals.
+
+Needs `opencv-python`, `numpy` and `fonttools` (only for building the font,
+not for running the app).
 
 ## Known gaps / manual-only
 
-A few things can't be meaningfully exercised by the automated test and are
-noted here instead:
-- Laser Pointer's glow and Auxiliary Lines dragging are visual-only — check
-  them by eye.
-- Send Mail opens a real mail client, which isn't something to automate.
-- Formula is currently a plain-text annotation (not a rendered LaTeX
-  equation), and Measure only reports straight-line distance (no
-  perimeter/area/angle modes yet).
+A few things can't be meaningfully checked by the automated tests:
+
+- The laser pointer glow and dragging guides are visual only; check them by
+  eye.
+- Send Mail opens a real mail client, which can't be automated.
+- Formula produces plain text (not a rendered LaTeX equation), and Measure
+  only reports straight-line distance (no perimeter, area or angle modes).
+- Bold, italic and underline are not offered: PDF text annotations can't
+  carry them, so the editor only shows options that are actually saved.
 
 ## Building a standalone Windows .exe
 
 ```
-venv\Scripts\pyinstaller.exe --noconfirm --windowed --name "PDFAnnotatorFree" ^
-    --paths app app\main.py
+venv\Scripts\pyinstaller.exe --noconfirm PDFAnnotatorFree.spec
 ```
 
-The build output will be in `dist\PDFAnnotatorFree\PDFAnnotatorFree.exe`
-(a folder you can zip and share — no installation or license required).
-
-For a single-file .exe instead (slower to start, one file to distribute),
-add `--onefile` to the command above.
+The spec bundles `app/assets` (icons, fonts, app icon) and sets the exe icon.
+The result is `dist\AupedianAnnotators\AupedianAnnotators.exe`, a folder you
+can zip and share; no installation or licence needed.

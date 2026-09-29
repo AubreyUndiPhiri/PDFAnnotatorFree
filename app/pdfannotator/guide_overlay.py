@@ -2,6 +2,8 @@ from PySide6.QtWidgets import QWidget, QMenu
 from PySide6.QtGui import QPainter, QColor
 from PySide6.QtCore import Qt, QPoint
 
+from . import theme
+
 
 class GuideLine(QWidget):
     """A draggable, non-printing alignment guide (horizontal or vertical),
@@ -31,7 +33,7 @@ class GuideLine(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        color = QColor(0, 200, 220, 160)
+        color = QColor(theme.GUIDE)
         painter.fillRect(self.rect(), Qt.transparent)
         mid = self.THICKNESS // 2
         pen_rect = self.rect()

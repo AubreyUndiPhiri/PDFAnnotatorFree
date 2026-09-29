@@ -67,14 +67,14 @@ NON_MUTATING_TOOLS = {
     Tool.POINTER,
 }
 
-# Tools that get their own remembered style (color/width/fontsize/opacity)
+# Tools that get their own remembered style (color/width/fontsize/fontname/opacity)
 STYLED_TOOLS = [
     Tool.HIGHLIGHT, Tool.UNDERLINE, Tool.STRIKEOUT, Tool.NOTE, Tool.INK,
     Tool.RECT, Tool.ELLIPSE, Tool.LINE, Tool.ARROW, Tool.TEXTBOX,
     Tool.MARKER, Tool.POLYGON, Tool.DIMENSION, Tool.FORMULA,
 ]
 
-DEFAULT_TOOL_STYLE = {"color": (255, 210, 0), "width": 2.0, "fontsize": 12, "opacity": 1.0}
+DEFAULT_TOOL_STYLE = {"color": (255, 210, 0), "width": 2.0, "fontsize": 12, "fontname": "Helvetica", "opacity": 1.0}
 
 # Per-tool style overrides seeded on top of DEFAULT_TOOL_STYLE
 TOOL_STYLE_OVERRIDES = {
@@ -196,3 +196,49 @@ TOOL_HINTS = {
     Tool.LASER_POINTER: "Move the mouse to point at the page (nothing is saved).",
     Tool.POINTER: "Click an annotation to inspect it (read-only).",
 }
+
+# Icon (app/assets/icons/<name>.svg) for every tool
+TOOL_ICONS = {
+    Tool.SELECT: "select",
+    Tool.EXTRACT_TEXT: "extract-text",
+    Tool.PAN: "pan",
+    Tool.ZOOM: "zoom",
+    Tool.HIGHLIGHT: "highlight",
+    Tool.UNDERLINE: "underline",
+    Tool.STRIKEOUT: "strikeout",
+    Tool.NOTE: "note",
+    Tool.INK: "pen",
+    Tool.MARKER: "marker",
+    Tool.TEXTBOX: "textbox",
+    Tool.FORMULA: "formula",
+    Tool.STAMP: "stamp",
+    Tool.IMAGE_STAMP: "image",
+    Tool.LINE: "line",
+    Tool.ARROW: "arrow",
+    Tool.RECT: "rect",
+    Tool.ELLIPSE: "ellipse",
+    Tool.POLYGON: "polygon",
+    Tool.DIMENSION: "dimension",
+    Tool.ERASER: "eraser",
+    Tool.LASSO: "lasso",
+    Tool.SNAPSHOT: "snapshot",
+    Tool.CROP: "crop",
+    Tool.MEASURE: "measure",
+    Tool.LASER_POINTER: "laser",
+    Tool.POINTER: "pointer",
+}
+
+# Toolbar / Tools-menu order, one list per separated group
+TOOL_GROUPS = [
+    [Tool.SELECT, Tool.EXTRACT_TEXT, Tool.PAN, Tool.ZOOM],
+    [Tool.HIGHLIGHT, Tool.UNDERLINE, Tool.STRIKEOUT, Tool.NOTE],
+    [Tool.INK, Tool.MARKER, Tool.TEXTBOX, Tool.FORMULA, Tool.STAMP],
+    [Tool.LINE, Tool.ARROW, Tool.RECT, Tool.ELLIPSE, Tool.POLYGON, Tool.DIMENSION],
+    [Tool.ERASER, Tool.LASSO, Tool.SNAPSHOT, Tool.CROP, Tool.MEASURE],
+    [Tool.LASER_POINTER, Tool.POINTER],
+]
+
+# Which style controls each tool actually uses (the toolbar hides the rest)
+WIDTH_TOOLS = {Tool.INK, Tool.MARKER, Tool.RECT, Tool.ELLIPSE, Tool.LINE, Tool.ARROW, Tool.POLYGON, Tool.DIMENSION}
+FONT_TOOLS = {Tool.TEXTBOX, Tool.FORMULA}
+UNIT_TOOLS = {Tool.DIMENSION, Tool.MEASURE}

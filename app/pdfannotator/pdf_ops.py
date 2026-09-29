@@ -1,6 +1,8 @@
 """Helper functions that operate directly on a fitz.Page to create/edit annotations."""
 import fitz
 
+from . import fonts
+
 
 def render_matrix(zoom: float) -> fitz.Matrix:
     """Matrix to pass to Page.get_pixmap(). PyMuPDF already bakes the page's
@@ -119,12 +121,37 @@ def add_line(page: fitz.Page, p1, p2, color, width, arrow=False) -> fitz.Annot:
     return annot
 
 
-def add_freetext(page: fitz.Page, rect, text, color, fontsize=12) -> fitz.Annot:
+def add_freetext(page: fitz.Page, rect, text, color, fontsize=12, fontname=fonts.DEFAULT_FONT, align=0):
+    """Add text in the chosen font. Base-14 fonts become an editable FreeText
+    annotation (returned); custom fonts are embedded and drawn into the page
+    content (returns None, since there is no annotation). align: 0 left,
+    1 centre, 2 right."""
+    if fonts.is_custom_font(fontname):
+        insert_custom_font_text(page, rect, text, color, fontsize, fontname, align)
+        return None
     annot = page.add_freetext_annot(
-        rect, text, fontsize=fontsize, text_color=color_to_rgb(color)
+        rect, text, fontsize=fontsize, fontname=fonts.BASE14_FONTS.get(fontname, "helv"),
+        text_color=color_to_rgb(color), align=align,
     )
     annot.update()
     return annot
+
+
+def insert_custom_font_text(page: fitz.Page, rect, text, color, fontsize, fontname, align=0):
+    fontfile = fonts.custom_font_path(fontname)
+    ref = fonts.pdf_font_ref(fontname)
+    page.insert_font(fontname=ref, fontfile=fontfile)
+    rect = fitz.Rect(rect)
+    # Widen to fit the longest line, then grow downward until the text fits;
+    # insert_textbox writes nothing and returns a negative value on overflow.
+    longest = max(fitz.Font(fontfile=fontfile).text_length(line, fontsize) for line in text.splitlines() or [""])
+    rect.x1 = max(rect.x1, rect.x0 + longest + 4)
+    for _ in range(50):
+        rc = page.insert_textbox(rect, text, fontname=ref, fontfile=fontfile, fontsize=fontsize, color=color_to_rgb(color), align=align)
+        if rc >= 0:
+            return
+        rect.y1 += -rc + 1
+    raise ValueError("Text does not fit on the page")
 
 
 def add_stamp(page: fitz.Page, rect, stamp_name: str) -> fitz.Annot:

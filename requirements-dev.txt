@@ -1,0 +1,7 @@
+-r requirements.txt
+pytest>=8.0
+# tools/font_builder (AUPedean glyph sheet -> .ttf) and tools/make_app_icon.py
+opencv-python>=4.8
+numpy>=1.26
+fonttools>=4.50
+Pillow>=10.0

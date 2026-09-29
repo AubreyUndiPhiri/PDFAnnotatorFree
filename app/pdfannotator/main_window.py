@@ -1,29 +1,53 @@
 import os
 import webbrowser
+from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QMainWindow, QTabWidget, QToolBar, QFileDialog, QMessageBox, QInputDialog,
-    QColorDialog, QSpinBox, QDoubleSpinBox, QComboBox, QLabel, QPushButton,
-    QStatusBar, QMenu,
+    QMainWindow, QTabWidget, QTabBar, QToolBar, QToolButton, QFileDialog, QMessageBox,
+    QInputDialog, QColorDialog, QSpinBox, QDoubleSpinBox, QComboBox, QLabel,
+    QStatusBar, QMenu, QWidget, QSizePolicy,
 )
-from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QShortcut, QIcon, QPixmap
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QShortcut, QIcon, QPixmap, QPainter
+from PySide6.QtCore import Qt, QSize, QRectF
 
 from .document_tab import DocumentTab
-from .dialogs import SignaturePadDialog, PropertiesDialog, ToolStylesDialog, FindBar
+from . import fonts, icons, theme
+from .dialogs import SignaturePadDialog, PropertiesDialog, ToolStylesDialog, FindBar, AdvancedTextEditorDialog
 from .tools import (
     Tool, STAMP_NAMES, UNITS, STYLED_TOOLS, DEFAULT_TOOL_STYLE,
-    TOOL_STYLE_OVERRIDES, TOOL_SHORTCUTS, TOOL_LABELS, TOOL_HINTS,
+    TOOL_STYLE_OVERRIDES, TOOL_SHORTCUTS, TOOL_LABELS, TOOL_HINTS, TOOL_ICONS,
+    TOOL_GROUPS, WIDTH_TOOLS, FONT_TOOLS, UNIT_TOOLS,
 )
 
-APP_TITLE = "PDF Annotator Free"
+APP_TITLE = "Aupedian Annotators"
+
+
+def resource_path(*parts):
+    base_dir = Path(__file__).resolve().parents[1]
+    return str(base_dir.joinpath(*parts))
+
+
+def swatch_pixmap(color, size=36):
+    """Rounded colour chip used by colour-picker buttons."""
+    pix = QPixmap(size, size)
+    pix.fill(Qt.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(QColor(0, 0, 0, 40))
+    painter.setBrush(QColor(color))
+    painter.drawRoundedRect(QRectF(1, 1, size - 2, size - 2), size * 0.22, size * 0.22)
+    painter.end()
+    return pix
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        theme.apply()
         self.setWindowTitle(APP_TITLE)
+        self.setWindowIcon(QIcon(resource_path("assets", "aupedian_annotators.svg")))
 
+        fonts.register_custom_fonts()
         self.current_tool = Tool.SELECT
         self.tool_styles = {t: {**DEFAULT_TOOL_STYLE, **TOOL_STYLE_OVERRIDES.get(t, {})} for t in Tool}
         self.current_stamp_name = STAMP_NAMES[0]
@@ -67,6 +91,14 @@ class MainWindow(QMainWindow):
         self.tool_styles[self.current_tool]["fontsize"] = value
 
     @property
+    def current_fontname(self):
+        return self.tool_styles[self.current_tool].get("fontname", fonts.DEFAULT_FONT)
+
+    @current_fontname.setter
+    def current_fontname(self, value):
+        self.tool_styles[self.current_tool]["fontname"] = value
+
+    @property
     def current_opacity(self):
         return self.tool_styles[self.current_tool]["opacity"]
 
@@ -76,27 +108,153 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self):
         self.tabs = QTabWidget()
-        self.tabs.setTabsClosable(True)
+        self.tabs.setDocumentMode(True)
         self.tabs.setMovable(True)
+        self.tabs.tabBar().setExpanding(False)
+        self.tabs.tabBar().setElideMode(Qt.ElideMiddle)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.currentChanged.connect(self._on_tab_switched)
         self.setCentralWidget(self.tabs)
 
         self.setStatusBar(QStatusBar())
+        self.statusBar().setSizeGripEnabled(False)
         self.hint_label = QLabel("")
-        self.statusBar().addPermanentWidget(self.hint_label)
+        self.statusBar().addWidget(self.hint_label, 1)
+        self.status_tool_label = QLabel("")
+        self.status_page_label = QLabel("")
+        self.status_zoom_label = QLabel("")
+        for label in (self.status_tool_label, self.status_page_label, self.status_zoom_label):
+            self.statusBar().addPermanentWidget(label)
 
         self.find_bar = FindBar(self)
         self.find_bar.findRequested.connect(self._on_find_requested)
 
+        self._create_actions()
+        self._build_command_bar()
         self._build_toolbar()
         self._build_menu()
 
     def current_tab(self) -> DocumentTab:
         return self.tabs.currentWidget()
 
+    def _action(self, text, slot, icon=None, shortcut=None, tip=None, checkable=False):
+        act = QAction(text, self)
+        if icon:
+            act.setIcon(icons.icon(icon))
+        if shortcut:
+            act.setShortcut(shortcut)
+        if checkable:
+            act.setCheckable(True)
+        keys = act.shortcut().toString(QKeySequence.NativeText)
+        act.setToolTip(f"{tip or text.replace('...', '')}" + (f"  ({keys})" if keys else ""))
+        act.triggered.connect(slot)
+        return act
+
+    def _create_actions(self):
+        """Actions shared by the toolbars and the menus (one icon, one
+        shortcut, one tooltip per command)."""
+        tab = self.current_tab
+        a = self._action
+        self.act_new = a("New Document", self.new_tab, "file-new", "Ctrl+T")
+        self.act_open = a("Open...", self.open_document, "open", QKeySequence.Open)
+        self.act_save = a("Save", self.save_document, "save", QKeySequence.Save)
+        self.act_save_as = a("Save As...", self.save_document_as, None, QKeySequence.SaveAs)
+        self.act_save_all = a("Save All", self.save_all, "save-all")
+        self.act_print = a("Print...", self.print_document, "print", QKeySequence.Print)
+        self.act_combine = a("Combine Files...", self.combine_files, "combine", "Alt+C")
+        self.act_split = a("Split Every Page to Separate Files...", self.split_pdf, "split")
+        self.act_properties = a("Properties...", self.show_properties, "properties", "Ctrl+D")
+        self.act_mail = a("Send Mail...", self.send_mail, "mail")
+
+        self.act_undo = a("Undo", self.undo, "undo", QKeySequence.Undo)
+        self.act_redo = a("Redo", self.redo, "redo", QKeySequence.Redo)
+        self.act_cut = a("Cut", self.cut_selected, "cut", QKeySequence.Cut)
+        self.act_copy = a("Copy", self.copy_selected, "copy", QKeySequence.Copy)
+        self.act_paste = a("Paste", self.paste, "paste", QKeySequence.Paste)
+        self.act_delete = a("Delete", self.delete_selected, "delete", QKeySequence.Delete)
+        self.act_find = a("Find...", self.show_find_bar, "find", QKeySequence.Find)
+        self.act_image = a("Insert Image...", self.insert_image_stamp, "image")
+        self.act_signature = a("Draw Signature...", self.insert_drawn_signature, "signature")
+
+        self.act_zoom_in = a("Zoom In", lambda: tab().zoom_in(), "zoom-in", QKeySequence.ZoomIn)
+        self.act_zoom_out = a("Zoom Out", lambda: tab().zoom_out(), "zoom-out", QKeySequence.ZoomOut)
+        self.act_actual = a("Actual Size", lambda: tab().actual_size(), "actual-size", "Ctrl+0")
+        self.act_fit_page = a("Fit Page", lambda: tab().fit_to_size(), "fit-page", "Ctrl+5")
+        self.act_fit_width = a("Fit Width", lambda: tab().fit_to_width(), "fit-width", "Ctrl+6")
+        self.act_first = a("First Page", lambda: tab().go_to_page(0), "first-page")
+        self.act_prev = a("Previous Page", lambda: tab().go_to_page(tab().current_page_index() - 1),
+                          "chevron-left")
+        self.act_next = a("Next Page", lambda: tab().go_to_page(tab().current_page_index() + 1),
+                          "chevron-right")
+        self.act_last = a("Last Page", lambda: tab().go_to_page(tab().document.page_count - 1), "last-page")
+        self.act_sidebar = a("Page Thumbnails", self._toggle_sidebar, "sidebar", "F4", checkable=True)
+        self.act_sidebar.setChecked(True)
+        self.act_fullscreen = a("Full Screen", self.toggle_full_screen, "fullscreen", "Ctrl+L")
+
+    @staticmethod
+    def _spacer(width=None):
+        w = QWidget()
+        if width is None:
+            w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        else:
+            w.setFixedWidth(width)
+        return w
+
+    def _build_command_bar(self):
+        self.nav_toolbar = QToolBar("Main")
+        self.nav_toolbar.setObjectName("commandBar")
+        self.nav_toolbar.setMovable(False)
+        self.nav_toolbar.setIconSize(QSize(18, 18))
+        self.addToolBar(self.nav_toolbar)
+        bar = self.nav_toolbar
+
+        for act in (self.act_open, self.act_save, self.act_print):
+            bar.addAction(act)
+        bar.addSeparator()
+        bar.addAction(self.act_undo)
+        bar.addAction(self.act_redo)
+        bar.addSeparator()
+        bar.addAction(self.act_image)
+        bar.addAction(self.act_signature)
+        bar.addSeparator()
+        bar.addAction(self.act_find)
+        bar.addAction(self.act_sidebar)
+
+        bar.addWidget(self._spacer())
+
+        bar.addAction(self.act_zoom_out)
+        self.zoom_combo = QComboBox()
+        self.zoom_combo.setEditable(True)
+        self.zoom_combo.addItems(["50%", "75%", "100%", "125%", "150%", "200%", "300%", "400%"])
+        self.zoom_combo.setFixedWidth(86)
+        self.zoom_combo.setToolTip("Zoom level")
+        self.zoom_combo.activated.connect(self._on_zoom_combo_changed)
+        self.zoom_combo.lineEdit().returnPressed.connect(
+            lambda: self._on_zoom_combo_changed(self.zoom_combo.currentIndex())
+        )
+        bar.addWidget(self.zoom_combo)
+        bar.addAction(self.act_zoom_in)
+        bar.addAction(self.act_fit_width)
+        bar.addAction(self.act_fit_page)
+        bar.addSeparator()
+
+        bar.addAction(self.act_prev)
+        self.page_spin = QSpinBox()
+        self.page_spin.setMinimum(1)
+        self.page_spin.setMaximum(1)
+        self.page_spin.setFixedWidth(62)
+        self.page_spin.setAlignment(Qt.AlignRight)
+        self.page_spin.setToolTip("Go to page")
+        self.page_spin.valueChanged.connect(lambda v: self.current_tab().go_to_page(v - 1))
+        bar.addWidget(self.page_spin)
+        self.page_count_label = QLabel("of 1")
+        bar.addWidget(self.page_count_label)
+        bar.addAction(self.act_next)
+
     def _build_toolbar(self):
+        self.addToolBarBreak()
         self.tool_toolbar = QToolBar("Tools")
+        self.tool_toolbar.setObjectName("toolBar")
         self.tool_toolbar.setMovable(False)
         self.tool_toolbar.setIconSize(QSize(20, 20))
         self.addToolBar(self.tool_toolbar)
@@ -105,51 +263,11 @@ class MainWindow(QMainWindow):
         self.tool_group.setExclusive(True)
         self.tool_actions = {}
 
-        def add_tool_action(tool, shortcut=None):
-            label = TOOL_LABELS.get(tool, tool.name.title())
-            act = QAction(label, self)
-            act.setCheckable(True)
-            act.setToolTip(TOOL_HINTS.get(tool, label))
-            if shortcut:
-                act.setShortcut(shortcut)
-            act.triggered.connect(lambda checked, t=tool: self.set_tool(t))
-            act.setData(tool)
-            self.tool_group.addAction(act)
-            self.tool_toolbar.addAction(act)
-            self.tool_actions[tool] = act
-            return act
-
-        self.action_select = add_tool_action(Tool.SELECT, TOOL_SHORTCUTS[Tool.SELECT])
-        add_tool_action(Tool.EXTRACT_TEXT, TOOL_SHORTCUTS[Tool.EXTRACT_TEXT])
-        add_tool_action(Tool.PAN, TOOL_SHORTCUTS[Tool.PAN])
-        add_tool_action(Tool.ZOOM, TOOL_SHORTCUTS[Tool.ZOOM])
-        self.tool_toolbar.addSeparator()
-        add_tool_action(Tool.HIGHLIGHT)
-        add_tool_action(Tool.UNDERLINE)
-        add_tool_action(Tool.STRIKEOUT)
-        add_tool_action(Tool.NOTE)
-        self.tool_toolbar.addSeparator()
-        add_tool_action(Tool.INK, TOOL_SHORTCUTS[Tool.INK])
-        add_tool_action(Tool.MARKER, TOOL_SHORTCUTS[Tool.MARKER])
-        add_tool_action(Tool.TEXTBOX, TOOL_SHORTCUTS[Tool.TEXTBOX])
-        add_tool_action(Tool.FORMULA)
-        add_tool_action(Tool.STAMP, TOOL_SHORTCUTS[Tool.STAMP])
-        self.tool_toolbar.addSeparator()
-        add_tool_action(Tool.LINE, TOOL_SHORTCUTS[Tool.LINE])
-        add_tool_action(Tool.ARROW, TOOL_SHORTCUTS[Tool.ARROW])
-        add_tool_action(Tool.RECT, TOOL_SHORTCUTS[Tool.RECT])
-        add_tool_action(Tool.ELLIPSE, TOOL_SHORTCUTS[Tool.ELLIPSE])
-        add_tool_action(Tool.POLYGON, TOOL_SHORTCUTS[Tool.POLYGON])
-        add_tool_action(Tool.DIMENSION, TOOL_SHORTCUTS[Tool.DIMENSION])
-        self.tool_toolbar.addSeparator()
-        add_tool_action(Tool.ERASER, TOOL_SHORTCUTS[Tool.ERASER])
-        add_tool_action(Tool.LASSO, TOOL_SHORTCUTS[Tool.LASSO])
-        add_tool_action(Tool.SNAPSHOT, TOOL_SHORTCUTS[Tool.SNAPSHOT])
-        add_tool_action(Tool.CROP, TOOL_SHORTCUTS[Tool.CROP])
-        add_tool_action(Tool.MEASURE, TOOL_SHORTCUTS[Tool.MEASURE])
-        self.tool_toolbar.addSeparator()
-        add_tool_action(Tool.LASER_POINTER, TOOL_SHORTCUTS[Tool.LASER_POINTER])
-        add_tool_action(Tool.POINTER, TOOL_SHORTCUTS[Tool.POINTER])
+        for g, group in enumerate(TOOL_GROUPS):
+            if g:
+                self.tool_toolbar.addSeparator()
+            for tool in group:
+                self.tool_toolbar.addAction(self._make_tool_action(tool))
 
         for tool, act in self.tool_actions.items():
             btn = self.tool_toolbar.widgetForAction(act)
@@ -159,90 +277,91 @@ class MainWindow(QMainWindow):
                     lambda pos, t=tool, b=btn: self._show_tool_context_menu(t, b, pos)
                 )
 
+        self.action_select = self.tool_actions[Tool.SELECT]
         self.action_select.setChecked(True)
 
-        self.tool_toolbar.addSeparator()
-        self.tool_toolbar.addWidget(QLabel(" Stamp: "))
-        self.stamp_combo = QComboBox()
-        self.stamp_combo.addItems(STAMP_NAMES)
-        self.stamp_combo.currentTextChanged.connect(self._set_stamp_name)
-        self.tool_toolbar.addWidget(self.stamp_combo)
+        # ---- contextual properties: only what the active tool uses is shown
+        self.tool_toolbar.addWidget(self._spacer(12))
+        self._property_actions = {}
 
-        self.tool_toolbar.addSeparator()
-        insert_image_btn = QPushButton("Insert Image...")
-        insert_image_btn.clicked.connect(self.insert_image_stamp)
-        self.tool_toolbar.addWidget(insert_image_btn)
+        def prop(key, label, widget):
+            acts = [self.tool_toolbar.addWidget(QLabel(label))] if label else []
+            acts.append(self.tool_toolbar.addWidget(widget))
+            self._property_actions[key] = acts
 
-        sign_btn = QPushButton("Draw Signature...")
-        sign_btn.clicked.connect(self.insert_drawn_signature)
-        self.tool_toolbar.addWidget(sign_btn)
-
-        self.tool_toolbar.addSeparator()
-        self.tool_toolbar.addWidget(QLabel(" Color: "))
-        self.color_btn = QPushButton()
-        self.color_btn.setFixedSize(26, 26)
+        self.color_btn = QToolButton()
+        self.color_btn.setObjectName("swatch")
+        self.color_btn.setIconSize(QSize(18, 18))
+        self.color_btn.setToolTip("Colour")
         self.color_btn.clicked.connect(self.pick_color)
-        self.tool_toolbar.addWidget(self.color_btn)
+        prop("color", "Colour", self.color_btn)
 
-        self.tool_toolbar.addWidget(QLabel("  Width: "))
         self.width_spin = QDoubleSpinBox()
         self.width_spin.setRange(0.5, 20.0)
         self.width_spin.setSingleStep(0.5)
+        self.width_spin.setDecimals(1)
+        self.width_spin.setSuffix(" pt")
+        self.width_spin.setToolTip("Line width")
         self.width_spin.valueChanged.connect(self._set_width)
-        self.tool_toolbar.addWidget(self.width_spin)
+        prop("width", "Width", self.width_spin)
 
-        self.tool_toolbar.addWidget(QLabel("  Font: "))
+        self.font_family_combo = QComboBox()
+        self.font_family_combo.addItems(fonts.available_fonts())
+        self.font_family_combo.setMinimumWidth(120)
+        self.font_family_combo.setToolTip("Font")
+        self.font_family_combo.currentTextChanged.connect(self._set_fontname)
+        prop("font", "Font", self.font_family_combo)
+
         self.font_spin = QSpinBox()
         self.font_spin.setRange(6, 96)
+        self.font_spin.setSuffix(" pt")
+        self.font_spin.setToolTip("Font size")
         self.font_spin.valueChanged.connect(self._set_fontsize)
-        self.tool_toolbar.addWidget(self.font_spin)
+        prop("fontsize", None, self.font_spin)
+
+        self.stamp_combo = QComboBox()
+        self.stamp_combo.addItems(STAMP_NAMES)
+        self.stamp_combo.setToolTip("Stamp")
+        self.stamp_combo.currentTextChanged.connect(self._set_stamp_name)
+        prop("stamp", "Stamp", self.stamp_combo)
+
+        self.unit_combo = QComboBox()
+        self.unit_combo.addItems([u[0] for u in UNITS])
+        self.unit_combo.setToolTip("Measurement unit")
+        self.unit_combo.currentIndexChanged.connect(self._on_unit_changed)
+        prop("unit", "Unit", self.unit_combo)
 
         self._refresh_style_controls()
 
-        self.nav_toolbar = QToolBar("Navigation")
-        self.nav_toolbar.setMovable(False)
-        self.addToolBar(self.nav_toolbar)
+    def _make_tool_action(self, tool):
+        label = TOOL_LABELS.get(tool, tool.name.title())
+        act = QAction(icons.icon(TOOL_ICONS[tool]), label, self)
+        act.setCheckable(True)
+        shortcut = TOOL_SHORTCUTS.get(tool)
+        if shortcut:
+            act.setShortcut(shortcut)
+        key = f"  ({shortcut})" if shortcut else ""
+        act.setToolTip(f"<b>{label}</b>{key}<br>{TOOL_HINTS.get(tool, '')}")
+        act.setStatusTip(TOOL_HINTS.get(tool, label))
+        act.triggered.connect(lambda checked, t=tool: self.set_tool(t))
+        act.setData(tool)
+        self.tool_group.addAction(act)
+        self.tool_actions[tool] = act
+        return act
 
-        zoom_out_btn = QPushButton("-")
-        zoom_out_btn.setFixedWidth(28)
-        zoom_out_btn.clicked.connect(lambda: self.current_tab().zoom_out())
-        self.nav_toolbar.addWidget(zoom_out_btn)
-
-        self.zoom_combo = QComboBox()
-        self.zoom_combo.setEditable(True)
-        self.zoom_combo.addItems(["50%", "75%", "100%", "125%", "150%", "200%", "400%"])
-        self.zoom_combo.setFixedWidth(80)
-        self.zoom_combo.activated.connect(self._on_zoom_combo_changed)
-        self.zoom_combo.lineEdit().returnPressed.connect(
-            lambda: self._on_zoom_combo_changed(self.zoom_combo.currentIndex())
-        )
-        self.nav_toolbar.addWidget(self.zoom_combo)
-
-        zoom_in_btn = QPushButton("+")
-        zoom_in_btn.setFixedWidth(28)
-        zoom_in_btn.clicked.connect(lambda: self.current_tab().zoom_in())
-        self.nav_toolbar.addWidget(zoom_in_btn)
-
-        zoom_reset_btn = QPushButton("Reset")
-        zoom_reset_btn.clicked.connect(lambda: self.current_tab().zoom_reset())
-        self.nav_toolbar.addWidget(zoom_reset_btn)
-
-        self.nav_toolbar.addSeparator()
-        self.nav_toolbar.addWidget(QLabel(" Page: "))
-        self.page_spin = QSpinBox()
-        self.page_spin.setMinimum(1)
-        self.page_spin.setMaximum(1)
-        self.page_spin.valueChanged.connect(lambda v: self.current_tab().go_to_page(v - 1))
-        self.nav_toolbar.addWidget(self.page_spin)
-        self.page_count_label = QLabel(" / 1")
-        self.nav_toolbar.addWidget(self.page_count_label)
-
-        self.nav_toolbar.addSeparator()
-        self.nav_toolbar.addWidget(QLabel(" Unit: "))
-        self.unit_combo = QComboBox()
-        self.unit_combo.addItems([u[0] for u in UNITS])
-        self.unit_combo.currentIndexChanged.connect(self._on_unit_changed)
-        self.nav_toolbar.addWidget(self.unit_combo)
+    def _update_property_visibility(self):
+        tool = self.current_tool
+        visible = {
+            "color": tool in STYLED_TOOLS,
+            "width": tool in WIDTH_TOOLS,
+            "font": tool in FONT_TOOLS,
+            "fontsize": tool in FONT_TOOLS,
+            "stamp": tool == Tool.STAMP,
+            "unit": tool in UNIT_TOOLS,
+        }
+        for key, acts in self._property_actions.items():
+            for act in acts:
+                act.setVisible(visible[key])
 
     def _build_menu(self):
         menubar = self.menuBar()
@@ -252,8 +371,10 @@ class MainWindow(QMainWindow):
         self._build_view_menu(menubar)
         self._build_window_menu(menubar)
 
-    def _add_menu_action(self, menu, text, slot, shortcut=None, checkable=False):
+    def _add_menu_action(self, menu, text, slot, shortcut=None, checkable=False, icon=None):
         act = QAction(text, self)
+        if icon:
+            act.setIcon(icons.icon(icon))
         if shortcut:
             act.setShortcut(shortcut)
         if checkable:
@@ -264,90 +385,82 @@ class MainWindow(QMainWindow):
 
     def _build_file_menu(self, menubar):
         m = menubar.addMenu("&File")
-        self._add_menu_action(m, "New Document", self.new_tab, "Ctrl+T")
-        self._add_menu_action(m, "Combine Files...", self.combine_files, "Alt+C")
-        self._add_menu_action(m, "Open...", self.open_document, QKeySequence.Open)
-        self._add_menu_action(m, "Save", self.save_document, QKeySequence.Save)
-        self._add_menu_action(m, "Save As...", self.save_document_as, QKeySequence.SaveAs)
-        self._add_menu_action(m, "Save as Template", self.save_as_template)
-        self._add_menu_action(m, "Save All", self.save_all)
+        m.addActions([self.act_new, self.act_open])
         m.addSeparator()
-        self._add_menu_action(m, "Close", self.close_current_tab, "Ctrl+W")
+        m.addActions([self.act_save, self.act_save_as, self.act_save_all])
+        self._add_menu_action(m, "Save as Template...", self.save_as_template)
+        m.addSeparator()
+        m.addActions([self.act_combine, self.act_split])
+        m.addSeparator()
+        m.addActions([self.act_properties, self.act_mail, self.act_print])
+        m.addSeparator()
+        self._add_menu_action(m, "Close", self.close_current_tab, "Ctrl+W", icon="close")
         self._add_menu_action(m, "Close All", self.close_all_tabs)
         m.addSeparator()
-        self._add_menu_action(m, "Properties", self.show_properties, "Ctrl+D")
-        self._add_menu_action(m, "Send Mail...", self.send_mail)
-        self._add_menu_action(m, "Print...", self.print_document, QKeySequence.Print)
-        m.addSeparator()
-        self._add_menu_action(m, "Split Every Page to Separate Files...", self.split_pdf)
-        m.addSeparator()
-        self._add_menu_action(m, "Exit", self.close, "Alt+F4")
+        self._add_menu_action(m, "Exit", self.close, "Alt+F4", icon="exit")
 
     def _build_edit_menu(self, menubar):
         m = menubar.addMenu("&Edit")
-        self._add_menu_action(m, "Undo", self.undo, QKeySequence.Undo)
-        self._add_menu_action(m, "Redo", self.redo, QKeySequence.Redo)
+        m.addActions([self.act_undo, self.act_redo])
         m.addSeparator()
-        self._add_menu_action(m, "Cut", self.cut_selected, QKeySequence.Cut)
-        self._add_menu_action(m, "Copy", self.copy_selected, QKeySequence.Copy)
-        self._add_menu_action(m, "Paste", self.paste, QKeySequence.Paste)
+        m.addActions([self.act_cut, self.act_copy, self.act_paste])
         self._add_menu_action(m, "Paste Without Formatting", self.paste_without_formatting, "Shift+Ctrl+V")
-        self._add_menu_action(m, "Delete", self.delete_selected, QKeySequence.Delete)
+        m.addAction(self.act_delete)
         m.addSeparator()
-        self._add_menu_action(m, "Find...", self.show_find_bar, QKeySequence.Find)
-        self._add_menu_action(m, "Insert Image", self.insert_image_stamp)
+        m.addActions([self.act_find, self.act_image, self.act_signature])
 
-        sel_menu = m.addMenu("Selection")
-        self._add_menu_action(sel_menu, "Select All on Page", lambda: self.current_tab().select_all_on_page())
+        sel_menu = m.addMenu(icons.icon("select-all"), "Selection")
+        self._add_menu_action(sel_menu, "Select All on Page", lambda: self.current_tab().select_all_on_page(),
+                              "Ctrl+A", icon="select-all")
         self._add_menu_action(sel_menu, "Deselect All", lambda: self.current_tab().deselect_all())
         self._add_menu_action(sel_menu, "Invert Selection", lambda: self.current_tab().invert_selection_on_page())
 
-        page_menu = m.addMenu("Page")
+        page_menu = m.addMenu(icons.icon("page-add"), "Page")
+        tab = self.current_tab
         self._add_menu_action(page_menu, "Insert Blank Page",
-                               lambda: self.current_tab().insert_blank_page(self.current_tab().current_page_index() + 1))
+                              lambda: tab().insert_blank_page(tab().current_page_index() + 1), icon="page-add")
         self._add_menu_action(page_menu, "Delete Current Page",
-                               lambda: self.current_tab().delete_page(self.current_tab().current_page_index()))
+                              lambda: tab().delete_page(tab().current_page_index()), icon="page-delete")
+        page_menu.addSeparator()
         self._add_menu_action(page_menu, "Rotate Left",
-                               lambda: self.current_tab().rotate_page(self.current_tab().current_page_index(), -90))
+                              lambda: tab().rotate_page(tab().current_page_index(), -90), icon="rotate-left")
         self._add_menu_action(page_menu, "Rotate Right",
-                               lambda: self.current_tab().rotate_page(self.current_tab().current_page_index(), 90))
+                              lambda: tab().rotate_page(tab().current_page_index(), 90), icon="rotate-right")
+        page_menu.addSeparator()
         self._add_menu_action(page_menu, "Extract Current Page...",
-                               lambda: self.current_tab().extract_page(self.current_tab().current_page_index()))
-
-        doc_menu = m.addMenu("Document")
-        self._add_menu_action(doc_menu, "Combine Files...", self.combine_files)
-        self._add_menu_action(doc_menu, "Split Document...", self.split_pdf)
-        self._add_menu_action(doc_menu, "Properties...", self.show_properties)
+                              lambda: tab().extract_page(tab().current_page_index()), icon="page-extract")
 
         m.addSeparator()
-        self._add_menu_action(m, "Melt All Annotations", self.melt_all_annotations)
-        self._add_menu_action(m, "Remove All Annotations", self.remove_all_annotations)
+        self._add_menu_action(m, "Flatten All Annotations...", self.melt_all_annotations, icon="layers")
+        self._add_menu_action(m, "Remove All Annotations", self.remove_all_annotations, icon="clear-all")
 
     def _build_tool_menu(self, menubar):
-        m = menubar.addMenu("&Tool")
-        for tool, act in self.tool_actions.items():
-            m.addAction(act)
-
-        self.favorites_menu = m.addMenu("Favorites")
-        self._rebuild_favorites_menu()
+        m = menubar.addMenu("&Tools")
+        for g, group in enumerate(TOOL_GROUPS):
+            if g:
+                m.addSeparator()
+            for tool in group:
+                m.addAction(self.tool_actions[tool])
 
         m.addSeparator()
-        self._add_menu_action(m, "Tool Styles...", self.show_tool_styles)
+        self.favorites_menu = m.addMenu(icons.icon("star"), "Favorites")
+        self._rebuild_favorites_menu()
+        self._add_menu_action(m, "Tool Styles...", self.show_tool_styles, icon="settings")
 
     def _rebuild_favorites_menu(self):
         self.favorites_menu.clear()
         if not self.favorites:
-            empty = self.favorites_menu.addAction("(right-click any tool button to pin it here)")
+            empty = self.favorites_menu.addAction("Right-click a tool button to pin it here")
             empty.setEnabled(False)
             return
         for tool in self.favorites:
-            act = self.favorites_menu.addAction(TOOL_LABELS.get(tool, tool.name))
+            act = self.favorites_menu.addAction(icons.icon(TOOL_ICONS[tool]), TOOL_LABELS.get(tool, tool.name))
             act.triggered.connect(lambda checked, t=tool: self.set_tool(t))
 
     def _show_tool_context_menu(self, tool, widget, pos):
         menu = QMenu(self)
         label = "Remove from Favorites" if tool in self.favorites else "Add to Favorites"
-        action = menu.addAction(label)
+        action = menu.addAction(icons.icon("star"), label)
         chosen = menu.exec(widget.mapToGlobal(pos))
         if chosen == action:
             self.toggle_favorite(tool)
@@ -361,62 +474,52 @@ class MainWindow(QMainWindow):
 
     def _build_view_menu(self, menubar):
         m = menubar.addMenu("&View")
-        self._add_menu_action(m, "Zoom In", lambda: self.current_tab().zoom_in(), QKeySequence.ZoomIn)
-        self._add_menu_action(m, "Zoom Out", lambda: self.current_tab().zoom_out(), QKeySequence.ZoomOut)
+        m.addActions([self.act_zoom_in, self.act_zoom_out])
         m.addSeparator()
-        self._add_menu_action(m, "Full Screen", self.toggle_full_screen, "Ctrl+L")
+        m.addActions([self.act_actual, self.act_fit_page, self.act_fit_width])
+        m.addSeparator()
+        m.addAction(self.act_fullscreen)
         self._add_menu_action(m, "Full Screen (in Window)", self.toggle_full_screen_in_window, "Alt+L")
         m.addSeparator()
-        self._add_menu_action(m, "Actual Size", lambda: self.current_tab().actual_size(), "Ctrl+0")
-        self._add_menu_action(m, "Fit to Size", lambda: self.current_tab().fit_to_size(), "Ctrl+5")
-        self._add_menu_action(m, "Fit to Width", lambda: self.current_tab().fit_to_width(), "Ctrl+6")
 
         layout_menu = m.addMenu("Page Layout")
         single_act = self._add_menu_action(layout_menu, "Single Page",
-                                            lambda: self.current_tab().set_page_layout_mode("single"),
-                                            checkable=True)
+                                           lambda: self.current_tab().set_page_layout_mode("single"),
+                                           checkable=True)
         continuous_act = self._add_menu_action(layout_menu, "Continuous",
-                                                lambda: self.current_tab().set_page_layout_mode("continuous"),
-                                                checkable=True)
+                                               lambda: self.current_tab().set_page_layout_mode("continuous"),
+                                               checkable=True)
         continuous_act.setChecked(True)
         layout_group = QActionGroup(self)
         layout_group.addAction(single_act)
         layout_group.addAction(continuous_act)
 
-        aux_menu = m.addMenu("Auxiliary Lines")
+        goto_menu = m.addMenu("Go To")
+        goto_menu.addActions([self.act_first, self.act_prev, self.act_next, self.act_last])
+        goto_menu.addSeparator()
+        self._add_menu_action(goto_menu, "Page...", self.go_to_page_dialog, "Ctrl+G")
+
+        aux_menu = m.addMenu(icons.icon("guides"), "Guides")
         self._add_menu_action(aux_menu, "Add Horizontal Guide", lambda: self.current_tab().add_guide("h"))
         self._add_menu_action(aux_menu, "Add Vertical Guide", lambda: self.current_tab().add_guide("v"))
         self._add_menu_action(aux_menu, "Clear All Guides", lambda: self.current_tab().clear_guides())
 
-        goto_menu = m.addMenu("Go to")
-        self._add_menu_action(goto_menu, "First Page", lambda: self.current_tab().go_to_page(0))
-        self._add_menu_action(goto_menu, "Previous Page",
-                               lambda: self.current_tab().go_to_page(self.current_tab().current_page_index() - 1))
-        self._add_menu_action(goto_menu, "Next Page",
-                               lambda: self.current_tab().go_to_page(self.current_tab().current_page_index() + 1))
-        self._add_menu_action(goto_menu, "Last Page",
-                               lambda: self.current_tab().go_to_page(self.current_tab().document.page_count - 1))
-        self._add_menu_action(goto_menu, "Go to Page...", self.go_to_page_dialog)
-
+        m.addSeparator()
         self.hide_annots_action = self._add_menu_action(
-            m, "Hide Annotations", self._toggle_hide_annotations, checkable=True
+            m, "Hide Annotations", self._toggle_hide_annotations, checkable=True, icon="eye-off"
         )
-
-        sidebar_menu = m.addMenu("Sidebar")
-        self.sidebar_action = self._add_menu_action(
-            sidebar_menu, "Show Thumbnails", self._toggle_sidebar, checkable=True
-        )
-        self.sidebar_action.setChecked(True)
+        self.sidebar_action = self.act_sidebar
+        m.addAction(self.act_sidebar)
 
         toolbars_menu = m.addMenu("Toolbars")
-        self.tool_toolbar_action = self._add_menu_action(
-            toolbars_menu, "Tool Toolbar", lambda checked: self.tool_toolbar.setVisible(checked), checkable=True
-        )
-        self.tool_toolbar_action.setChecked(True)
         self.nav_toolbar_action = self._add_menu_action(
-            toolbars_menu, "Navigation Toolbar", lambda checked: self.nav_toolbar.setVisible(checked), checkable=True
+            toolbars_menu, "Main Toolbar", lambda checked: self.nav_toolbar.setVisible(checked), checkable=True
         )
         self.nav_toolbar_action.setChecked(True)
+        self.tool_toolbar_action = self._add_menu_action(
+            toolbars_menu, "Tools Toolbar", lambda checked: self.tool_toolbar.setVisible(checked), checkable=True
+        )
+        self.tool_toolbar_action.setChecked(True)
 
     def _build_window_menu(self, menubar):
         self.window_menu = menubar.addMenu("&Window")
@@ -425,7 +528,7 @@ class MainWindow(QMainWindow):
     def _rebuild_window_menu(self):
         self.window_menu.clear()
         for i in range(self.tabs.count()):
-            act = self.window_menu.addAction(self.tabs.tabText(i))
+            act = self.window_menu.addAction(self.tabs.tabText(i).lstrip("● "))
             act.setCheckable(True)
             act.setChecked(i == self.tabs.currentIndex())
             act.triggered.connect(lambda checked, idx=i: self.tabs.setCurrentIndex(idx))
@@ -438,11 +541,22 @@ class MainWindow(QMainWindow):
     # Tab lifecycle
     # ---------------------------------------------------------------
 
+    def _add_tab(self, tab, title):
+        index = self.tabs.addTab(tab, icons.icon("note"), title)
+        close_btn = QToolButton()
+        close_btn.setIcon(icons.icon("close"))
+        close_btn.setIconSize(QSize(12, 12))
+        close_btn.setAutoRaise(True)
+        close_btn.setToolTip("Close document")
+        close_btn.clicked.connect(lambda: self.close_tab(self.tabs.indexOf(tab)))
+        self.tabs.tabBar().setTabButton(index, QTabBar.RightSide, close_btn)
+        self.tabs.setCurrentIndex(index)
+        return index
+
     def new_tab(self):
         self._untitled_counter += 1
         tab = DocumentTab(self)
-        index = self.tabs.addTab(tab, f"Untitled {self._untitled_counter}")
-        self.tabs.setCurrentIndex(index)
+        self._add_tab(tab, f"Untitled {self._untitled_counter}")
         return tab
 
     def open_files_as_tabs(self, paths):
@@ -454,8 +568,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Error", f"Could not open file:\n{e}")
                 tab.deleteLater()
                 continue
-            index = self.tabs.addTab(tab, os.path.basename(path))
-            self.tabs.setCurrentIndex(index)
+            self._add_tab(tab, os.path.basename(path))
 
     def on_tab_content_changed(self, tab):
         index = self.tabs.indexOf(tab)
@@ -463,14 +576,36 @@ class MainWindow(QMainWindow):
             return
         name = tab.display_name()
         if tab.document.dirty:
-            name = "*" + name
+            name = "● " + name
         self.tabs.setTabText(index, name)
+        self.tabs.setTabToolTip(index, tab.document.path or "Not saved yet")
         self._rebuild_window_menu()
         if tab is self.current_tab():
             self._sync_toolbar_to_tab(tab)
 
     def on_zoom_changed(self, zoom):
         self.zoom_combo.setCurrentText(f"{int(zoom * 100)}%")
+        self.status_zoom_label.setText(f"{int(zoom * 100)}%")
+
+    def on_current_page_changed(self, tab):
+        """Called while scrolling so the page box and status bar follow the view."""
+        if tab is not self.current_tab():
+            return
+        self._sync_page_controls(tab)
+
+    def _sync_page_controls(self, tab):
+        count = tab.document.page_count
+        current = tab.current_page_index() + 1
+        self.page_spin.blockSignals(True)
+        self.page_spin.setMaximum(max(1, count))
+        self.page_spin.setValue(current)
+        self.page_spin.blockSignals(False)
+        self.page_count_label.setText(f"of {count}")
+        self.status_page_label.setText(f"Page {current} of {count}" if count else "")
+        self.act_prev.setEnabled(current > 1)
+        self.act_first.setEnabled(current > 1)
+        self.act_next.setEnabled(current < count)
+        self.act_last.setEnabled(current < count)
 
     def _on_tab_switched(self, index):
         tab = self.tabs.widget(index)
@@ -480,12 +615,9 @@ class MainWindow(QMainWindow):
         self._rebuild_window_menu()
 
     def _sync_toolbar_to_tab(self, tab):
-        self.page_spin.blockSignals(True)
-        self.page_spin.setMaximum(max(1, tab.document.page_count))
-        self.page_spin.setValue(tab.current_page_index() + 1)
-        self.page_spin.blockSignals(False)
-        self.page_count_label.setText(f" / {tab.document.page_count}")
+        self._sync_page_controls(tab)
         self.zoom_combo.setCurrentText(f"{int(tab.zoom * 100)}%")
+        self.status_zoom_label.setText(f"{int(tab.zoom * 100)}%")
         self.unit_combo.blockSignals(True)
         self.unit_combo.setCurrentIndex(tab.unit_index)
         self.unit_combo.blockSignals(False)
@@ -549,6 +681,7 @@ class MainWindow(QMainWindow):
             if tool != Tool.LASER_POINTER:
                 tab.hide_laser_pointer()
             tab.set_hint(TOOL_HINTS.get(tool, ""))
+        self.status_tool_label.setText(TOOL_LABELS.get(tool, tool.name.title()))
         self._refresh_style_controls()
 
     def _refresh_style_controls(self):
@@ -560,6 +693,10 @@ class MainWindow(QMainWindow):
         self.font_spin.blockSignals(True)
         self.font_spin.setValue(style.get("fontsize", 12))
         self.font_spin.blockSignals(False)
+        self.font_family_combo.blockSignals(True)
+        self.font_family_combo.setCurrentText(style.get("fontname", fonts.DEFAULT_FONT))
+        self.font_family_combo.blockSignals(False)
+        self._update_property_visibility()
 
     def _set_stamp_name(self, name):
         self.current_stamp_name = name
@@ -570,21 +707,22 @@ class MainWindow(QMainWindow):
     def _set_fontsize(self, value):
         self.current_fontsize = value
 
+    def _set_fontname(self, name):
+        self.current_fontname = name
+
     def _on_unit_changed(self, index):
         tab = self.current_tab()
         if tab is not None:
             tab.unit_index = index
 
     def pick_color(self):
-        color = QColorDialog.getColor(self.current_color, self, "Choose Color")
+        color = QColorDialog.getColor(self.current_color, self, "Choose Colour")
         if color.isValid():
             self.current_color = color
             self._update_color_button(color)
 
     def _update_color_button(self, color):
-        pix = QPixmap(20, 20)
-        pix.fill(color)
-        self.color_btn.setIcon(QIcon(pix))
+        self.color_btn.setIcon(QIcon(swatch_pixmap(color)))
 
     def _on_zoom_combo_changed(self, index):
         text = self.zoom_combo.currentText().strip().rstrip("%")
@@ -646,7 +784,7 @@ class MainWindow(QMainWindow):
         tab = self.current_tab()
         if not tab or not tab.document.is_open:
             return
-        templates_dir = os.path.join(os.path.expanduser("~"), "Documents", "PDFAnnotatorFree", "Templates")
+        templates_dir = os.path.join(os.path.expanduser("~"), "Documents", "AupedianAnnotators", "Templates")
         os.makedirs(templates_dir, exist_ok=True)
         self._save_tab_as(tab, directory=templates_dir)
 
