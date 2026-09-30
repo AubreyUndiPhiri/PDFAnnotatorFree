@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 import pytest
 
 from pdfannotator.cloud import sign_service
+from pdfannotator.cloud.google_auth import http_request
 
 
 class FakeApis:
@@ -139,3 +140,27 @@ def test_install_explains_bad_keys(apis):
         sign_service.install("cf-bad", "xkeysib-good", "o@example.com", "owner@example.com", wait_online=0)
     with pytest.raises(sign_service.SetupError, match="isn't a verified sender"):
         sign_service.install("cf-good", "xkeysib-good", "o@example.com", "someone@else.com", wait_online=0)
+
+
+def test_requests_say_who_they_are():
+    """Cloudflare refuses Python's default User-Agent (error 1010)."""
+    seen = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.headers.get("User-Agent", ""))
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        http_request("GET", f"http://127.0.0.1:{server.server_address[1]}/")
+    finally:
+        server.shutdown()
+    assert seen and seen[0].startswith("AupedeanAnnotator/") and "Python-urllib" not in seen[0]

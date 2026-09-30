@@ -37,7 +37,7 @@ CLOUD_CONSOLE = {
 
 def friendly(exc):
     if isinstance(exc, Offline):
-        return "Can't reach Google. Check the internet connection and try again."
+        return f"{exc} Check the internet connection and try again."
     if isinstance(exc, (AuthError, SetupError)):
         return str(exc)
     if isinstance(exc, ApiError):

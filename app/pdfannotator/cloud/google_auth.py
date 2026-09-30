@@ -16,6 +16,7 @@ import http.server
 import json
 import os
 import secrets
+import socket
 import threading
 import time
 import urllib.error
@@ -41,6 +42,7 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 TIMEOUT = 60
+USER_AGENT = "AupedeanAnnotator/2.0 (Windows)"
 
 
 class AuthError(Exception):
@@ -136,7 +138,9 @@ def http_request(method, url, params=None, data=None, headers=None, timeout=TIME
     Offline (no connection)."""
     if params:
         url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
+    # Cloudflare (in front of the signature service and Brevo) refuses Python's
+    # default User-Agent with "error code: 1010", so say who we are
+    req = urllib.request.Request(url, data=data, method=method, headers={"User-Agent": USER_AGENT, **(headers or {})})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, dict(resp.headers), resp.read()
@@ -159,7 +163,44 @@ def http_request(method, url, params=None, data=None, headers=None, timeout=TIME
             pass
         raise ApiError(e.code, str(message), reason, body, dict(e.headers or {})) from None
     except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
-        raise Offline(f"Can't reach Google ({getattr(e, 'reason', e)}).") from None
+        host = urllib.parse.urlparse(url).hostname or ""
+        if isinstance(getattr(e, "reason", None), socket.gaierror) and host not in _DNS_OVERRIDES:
+            ip = _resolve_publicly(host)   # this network's DNS doesn't know the name (yet): ask a public one
+            if ip:
+                _DNS_OVERRIDES[host] = ip
+                return http_request(method, url, data=data, headers=headers, timeout=timeout)
+        raise Offline(f"Can't reach {host or 'the internet'} ({getattr(e, 'reason', e)}).") from None
+
+
+# A name this network's DNS can't find (a brand-new workers.dev address is
+# often remembered as "doesn't exist" for a while) is looked up with public
+# DNS over HTTPS instead, and connections to it use that address.
+_DNS_OVERRIDES = {}
+_system_getaddrinfo = socket.getaddrinfo
+
+
+def _getaddrinfo(host, *args, **kwargs):
+    return _system_getaddrinfo(_DNS_OVERRIDES.get(host, host), *args, **kwargs)
+
+
+socket.getaddrinfo = _getaddrinfo
+
+
+def _resolve_publicly(host):
+    """An IPv4 address for `host` from Cloudflare's or Google's DNS over HTTPS
+    (reached by IP address, so no DNS is needed to ask), or None."""
+    for resolver in ("https://1.1.1.1/dns-query", "https://8.8.8.8/resolve"):
+        req = urllib.request.Request(f"{resolver}?name={urllib.parse.quote(host)}&type=A",
+                                     headers={"accept": "application/dns-json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                answers = json.loads(resp.read()).get("Answer") or []
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError, ValueError):
+            continue
+        ips = [a["data"] for a in answers if a.get("type") == 1 and a.get("data")]
+        if ips:
+            return ips[0]
+    return None
 
 
 def _form_post(url, fields):
