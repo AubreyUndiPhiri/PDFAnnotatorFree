@@ -298,3 +298,28 @@ def test_bundled_font_library(app):
     page = doc.new_page()
     annot = pdf_ops.add_text_box(page, fitz.Point(40, 40), "Bundled font check", QColor("black"), 18, "Caveat")
     assert pdf_ops.freetext_style(annot)["fontname"] == "Caveat"
+
+
+def test_ribbon_arrow_hides_and_shows_the_toolbars(app, tmp_path):
+    from pdfannotator.main_window import MainWindow
+
+    w = MainWindow()
+    w.show()
+    if not w.ribbon_shown:
+        w.act_ribbon.trigger()
+    assert w.menuBar().cornerWidget() is w.ribbon_btn and w.nav_toolbar.isVisible() and w.tool_toolbar.isVisible()
+    w.ribbon_btn.click()
+    assert not w.ribbon_shown and not w.nav_toolbar.isVisible() and not w.tool_toolbar.isVisible()
+    assert "Show the ribbon" in w.ribbon_btn.toolTip()
+    w.ribbon_btn.click()
+    assert w.nav_toolbar.isVisible() and w.tool_toolbar.isVisible()
+
+    # opening a file replaces the untouched "Untitled" tab
+    pdf = tmp_path / "a.pdf"
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(pdf)
+    assert w.tabs.count() == 1 and w.tabs.tabText(0).startswith("Untitled")
+    w.open_files_as_tabs([str(pdf)])
+    assert [w.tabs.tabText(i) for i in range(w.tabs.count())] == ["a.pdf"]
+    w.close()

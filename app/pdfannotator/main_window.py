@@ -138,6 +138,34 @@ class MainWindow(QMainWindow):
         self._build_command_bar()
         self._build_toolbar()
         self._build_menu()
+        self._build_ribbon_toggle()
+
+    def _build_ribbon_toggle(self):
+        """The arrow at the far right of the menu bar: hides the toolbars (the
+        ribbon) for more room, and brings them back."""
+        self.ribbon_btn = QToolButton()
+        self.ribbon_btn.setObjectName("ribbonToggle")
+        self.ribbon_btn.setAutoRaise(True)
+        self.ribbon_btn.setIconSize(QSize(16, 16))
+        self.ribbon_btn.clicked.connect(self.act_ribbon.trigger)
+        self.menuBar().setCornerWidget(self.ribbon_btn, Qt.TopRightCorner)
+        self._apply_toolbar_visibility()
+
+    def _set_ribbon_shown(self, shown):
+        self.ribbon_shown = bool(shown)
+        theme._settings().setValue("ui/ribbon", "true" if self.ribbon_shown else "false")
+        self._apply_toolbar_visibility()
+
+    def _apply_toolbar_visibility(self):
+        """Both toolbars follow the ribbon arrow, their own View > Toolbars
+        switch, and (the tools) whether a PDF is showing."""
+        editor = isinstance(self.tabs.currentWidget(), EditorTab)
+        self.nav_toolbar.setVisible(self.ribbon_shown and self.nav_toolbar_action.isChecked())
+        self.tool_toolbar.setVisible(self.ribbon_shown and self.tool_toolbar_action.isChecked() and not editor)
+        if hasattr(self, "ribbon_btn"):
+            self.ribbon_btn.setIcon(icons.icon("chevron-up" if self.ribbon_shown else "chevron-down"))
+            keys = self.act_ribbon.shortcut().toString(QKeySequence.NativeText)
+            self.ribbon_btn.setToolTip(("Hide the ribbon" if self.ribbon_shown else "Show the ribbon") + f"  ({keys})")
 
     def current_tab(self) -> DocumentTab:
         """The active PDF tab, or None while a Word / LaTeX tab is active."""
@@ -227,6 +255,10 @@ class MainWindow(QMainWindow):
                                   tip="Pen strokes get thicker and thinner: with a pen tablet or stylus from "
                                       "how hard you press, with a mouse from how fast you draw")
         self.act_pressure_ink.setChecked(self.ink_pressure)
+        self.ribbon_shown = settings.value("ui/ribbon", "true") == "true"
+        self.act_ribbon = a("Show Ribbon", self._set_ribbon_shown, None, "Ctrl+F1", checkable=True,
+                            tip="Show or hide the toolbars at the top")
+        self.act_ribbon.setChecked(self.ribbon_shown)
         self.act_fullscreen = a("Full Screen", self.toggle_full_screen, "fullscreen", "Ctrl+L")
         self.act_dark = a("Dark Mode", self.toggle_dark_mode, "moon", "Ctrl+Shift+D", checkable=True,
                           tip="Switch between the light (glass) and dark (clay) look")
@@ -451,7 +483,7 @@ class MainWindow(QMainWindow):
         shared = {self.act_new, self.act_new_word, self.act_new_latex, self.act_open, self.act_save,
                   self.act_save_as, self.act_save_all, self.act_print, self.act_undo, self.act_redo, self.act_cut,
                   self.act_copy, self.act_paste, self.act_find, self.act_zoom_in, self.act_zoom_out,
-                  self.act_actual, self.act_fullscreen, self.act_dark, self.nav_toolbar_action}
+                  self.act_actual, self.act_fullscreen, self.act_dark, self.nav_toolbar_action, self.act_ribbon}
         shared |= self.cloud.shared_actions()
         found = []
 
@@ -626,13 +658,14 @@ class MainWindow(QMainWindow):
         self.sidebar_action = self.act_sidebar
         m.addAction(self.act_sidebar)
 
+        m.addAction(self.act_ribbon)
         toolbars_menu = m.addMenu("Toolbars")
         self.nav_toolbar_action = self._add_menu_action(
-            toolbars_menu, "Main Toolbar", lambda checked: self.nav_toolbar.setVisible(checked), checkable=True
+            toolbars_menu, "Main Toolbar", lambda _checked: self._apply_toolbar_visibility(), checkable=True
         )
         self.nav_toolbar_action.setChecked(True)
         self.tool_toolbar_action = self._add_menu_action(
-            toolbars_menu, "Tools Toolbar", lambda checked: self.tool_toolbar.setVisible(checked), checkable=True
+            toolbars_menu, "Tools Toolbar", lambda _checked: self._apply_toolbar_visibility(), checkable=True
         )
         self.tool_toolbar_action.setChecked(True)
 
@@ -678,6 +711,19 @@ class MainWindow(QMainWindow):
         from .latex.editor import OPEN_SUFFIXES as LATEX_SUFFIXES
         from .word_editor import OPEN_SUFFIXES as WORD_SUFFIXES
 
+        before = {self.tabs.widget(i) for i in range(self.tabs.count())}
+        blank = [w for w in before if isinstance(w, DocumentTab)              # an untouched "Untitled"
+                 and not w.document.path and not w.document.dirty]
+        self._open_paths(paths, check_signed, WORD_SUFFIXES, LATEX_SUFFIXES)
+        if any(self.tabs.widget(i) not in before for i in range(self.tabs.count())):
+            for w in blank:   # the empty "Untitled" tab has served its purpose
+                index = self.tabs.indexOf(w)
+                if index >= 0:
+                    self.tabs.removeTab(index)
+                    w.deleteLater()
+            self._rebuild_window_menu()
+
+    def _open_paths(self, paths, check_signed, WORD_SUFFIXES, LATEX_SUFFIXES):
         for path in paths:
             # a signed copy of one of our signing files: add the signature to the original instead
             if check_signed and path.lower().endswith(".pdf") and hasattr(self, "cloud") \
@@ -834,7 +880,7 @@ class MainWindow(QMainWindow):
         editor = isinstance(tab, EditorTab)
         for act in getattr(self, "_pdf_only_actions", []):
             act.setEnabled(not editor)
-        self.tool_toolbar.setVisible(not editor and self.tool_toolbar_action.isChecked())
+        self._apply_toolbar_visibility()
         for act in self._page_widget_actions:
             act.setVisible(not editor)
         self._zoom_combo_action.setVisible(not editor)
@@ -1322,9 +1368,12 @@ class MainWindow(QMainWindow):
             self.showFullScreen()
 
     def toggle_full_screen_in_window(self):
-        hidden = self.tool_toolbar.isVisible()
-        self.tool_toolbar.setVisible(not hidden)
-        self.nav_toolbar.setVisible(not hidden)
+        hidden = self.menuBar().isVisible()
+        if hidden:
+            self.tool_toolbar.setVisible(False)
+            self.nav_toolbar.setVisible(False)
+        else:
+            self._apply_toolbar_visibility()   # back to how the ribbon was
         self.menuBar().setVisible(not hidden)
         tab = self.current_tab()
         if tab:

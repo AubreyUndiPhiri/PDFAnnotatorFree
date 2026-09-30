@@ -223,6 +223,10 @@ QToolButton:checked {{ background: {s['checked']}; {checked_edges} }}
 QToolButton[popupMode="1"] {{ padding-right: 14px; }}
 QToolButton::menu-button {{ border: none; width: 12px; }}
 QToolButton::menu-arrow {{ image: url({down_small}); }}
+QToolButton[popupMode="2"] {{ padding-right: 18px; }}
+QToolButton::menu-indicator {{ image: url({down_small}); subcontrol-origin: padding;
+    subcontrol-position: center right; right: 4px; width: 10px; height: 10px; }}
+QToolButton#ribbonToggle {{ margin: 2px 10px 0 4px; padding: 4px; }}
 QToolButton#swatch {{ border: 1px solid {BORDER_STRONG}; padding: 3px; }}
 QToolBar QLabel {{ color: {TEXT_MUTED}; padding: 0 2px 0 6px; }}
 
