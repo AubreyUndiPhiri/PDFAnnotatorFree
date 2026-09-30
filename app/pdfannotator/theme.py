@@ -233,6 +233,11 @@ QToolButton[popupMode="2"] {{ padding-right: 18px; }}
 QToolButton::menu-indicator {{ image: url({down_small}); subcontrol-origin: padding;
     subcontrol-position: center right; right: 4px; width: 10px; height: 10px; }}
 QToolButton#ribbonToggle {{ margin: 2px 10px 0 4px; padding: 4px; }}
+QFrame#penPanel {{ background: {s['panel']}; {panel_edges} border-radius: {br}px; }}
+QFrame#penPanel QFrame#penRule {{ background: {BORDER}; border: none; }}
+QToolButton#penSwatch {{ border: 2px solid transparent; border-radius: 12px; padding: 1px; }}
+QToolButton#penSwatch:hover {{ border-color: {ACCENT_SOFT_BORDER}; background: transparent; }}
+QToolButton#penSwatch:checked {{ border-color: {ACCENT}; background: transparent; }}
 QToolButton#swatch {{ border: 1px solid {ICON_DISABLED}; padding: 3px; }}
 QToolBar QLabel {{ color: {TEXT_MUTED}; padding: 0 2px 0 6px; }}
 
@@ -388,7 +393,7 @@ class _RoundedPopups(QObject):
 _popups = _RoundedPopups()
 
 # The floating bars that get a real soft shadow in light mode
-_SHADOW_NAMES = {"commandBar", "toolBar", "editorBar"}
+_SHADOW_NAMES = {"commandBar", "toolBar", "editorBar", "penPanel"}
 
 
 def _wants_shadow(widget):
@@ -426,6 +431,59 @@ class _Depth(QObject):
 
 _depth = _Depth()
 
+# Windows 11 title bars and popup corners (DwmSetWindowAttribute); ignored elsewhere
+_FRAME = {
+    LIGHT: {"caption": "#e9ecfe", "text": "#1d2233", "border": "#dcdff4"},
+    DARK: {"caption": "#15131f", "text": "#ececf2", "border": "#1f1c2c"},
+}
+_DWMWA_DARK_MODE, _DWMWA_CORNERS, _DWMWA_BORDER, _DWMWA_CAPTION, _DWMWA_TEXT = 20, 33, 34, 35, 36
+_DWMWCP_ROUNDSMALL = 3
+
+
+def _dwm_set(widget, attribute, value):
+    import ctypes
+    import sys
+
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(ctypes.c_void_p(int(widget.winId())), attribute,
+                                                   ctypes.byref(ctypes.c_int(value)), 4)
+    except (OSError, AttributeError):
+        pass
+
+
+def _colorref(hex_color):
+    c = QColor(hex_color)
+    return c.red() | (c.green() << 8) | (c.blue() << 16)
+
+
+def _style_frame(widget):
+    """The title bar (and edge) of a window in the look's colours, so no black
+    system bar sits above a white clay-glass window; small popups (lists,
+    tooltips) get the system's rounded corners."""
+    if isinstance(widget, QMenu):
+        return   # menus draw their own rounded corners
+    kind = widget.windowType()
+    if kind in (Qt.Popup, Qt.ToolTip):
+        _dwm_set(widget, _DWMWA_CORNERS, _DWMWCP_ROUNDSMALL)
+    elif kind in (Qt.Window, Qt.Dialog):
+        f = _FRAME[mode]
+        _dwm_set(widget, _DWMWA_DARK_MODE, 1 if mode == DARK else 0)
+        _dwm_set(widget, _DWMWA_CAPTION, _colorref(f["caption"]))
+        _dwm_set(widget, _DWMWA_TEXT, _colorref(f["text"]))
+        _dwm_set(widget, _DWMWA_BORDER, _colorref(f["border"]))
+
+
+class _Frames(QObject):
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Show and getattr(obj, "isWindow", None) and obj.isWindow():
+            _style_frame(obj)
+        return False
+
+
+_frames = _Frames()
+
 
 def _restyle(app):
     app.setPalette(_palette())
@@ -441,6 +499,7 @@ def apply(app: QApplication | None = None):
     app.setFont(QFont(FONT_FAMILY, FONT_SIZE))
     app.installEventFilter(_popups)
     app.installEventFilter(_depth)
+    app.installEventFilter(_frames)
     _load_tokens(_settings().value(_SETTINGS_KEY, LIGHT))
     _restyle(app)
     _applied = True
@@ -457,4 +516,6 @@ def set_mode(new_mode, app: QApplication | None = None):
     for widget in app.allWidgets():
         if _wants_shadow(widget):
             _apply_depth(widget)
+        if widget.isWindow() and widget.isVisible():
+            _style_frame(widget)
         widget.update()

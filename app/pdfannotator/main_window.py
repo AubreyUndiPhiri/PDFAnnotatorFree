@@ -149,7 +149,47 @@ class MainWindow(QMainWindow):
         self.ribbon_btn.setIconSize(QSize(16, 16))
         self.ribbon_btn.clicked.connect(self.act_ribbon.trigger)
         self.menuBar().setCornerWidget(self.ribbon_btn, Qt.TopRightCorner)
+        from .pen_panel import PenPanel
+
+        self.pen_panel = PenPanel(self)
+        self._pen_panel_closed = False
         self._apply_toolbar_visibility()
+
+    # ---- the pen panel: floats while the ribbon is hidden and a pen tool is in use
+    def _update_pen_panel(self):
+        from .pen_panel import PEN_TOOLS
+
+        if not hasattr(self, "pen_panel"):
+            return
+        if self.ribbon_shown:
+            self._pen_panel_closed = False
+            want = False
+        else:
+            want = not self._pen_panel_closed and (self.pen_panel.isVisible() or self.current_tool in PEN_TOOLS)
+        want = want and self.current_tab() is not None
+        if want and not self.pen_panel.isVisible():
+            self.pen_panel.refresh()
+            self.pen_panel.show()
+            self.pen_panel.place()
+            self.pen_panel.raise_()
+        elif not want:
+            self.pen_panel.hide()
+
+    def close_pen_panel(self):
+        self._pen_panel_closed = True
+        self.pen_panel.hide()
+
+    def set_pen_color(self, color):
+        """A colour from the pen panel: for the Pen or Marker (switching to the Pen from other tools)."""
+        if self.current_tool not in (Tool.INK, Tool.MARKER):
+            self.set_tool(Tool.INK)
+        self.current_color = color
+        self._update_color_button(color)
+        self.pen_panel.refresh()
+
+    def set_pen_width(self, width):
+        self.width_spin.setValue(width)   # its signal stores it for the current tool
+        self.pen_panel.refresh()
 
     def _set_ribbon_shown(self, shown):
         self.ribbon_shown = bool(shown)
@@ -162,6 +202,7 @@ class MainWindow(QMainWindow):
         editor = isinstance(self.tabs.currentWidget(), EditorTab)
         self.nav_toolbar.setVisible(self.ribbon_shown and self.nav_toolbar_action.isChecked())
         self.tool_toolbar.setVisible(self.ribbon_shown and self.tool_toolbar_action.isChecked() and not editor)
+        self._update_pen_panel()
         if hasattr(self, "ribbon_btn"):
             self.ribbon_btn.setIcon(icons.icon("chevron-up" if self.ribbon_shown else "chevron-down"))
             keys = self.act_ribbon.shortcut().toString(QKeySequence.NativeText)
@@ -985,6 +1026,9 @@ class MainWindow(QMainWindow):
             tab.set_hint(TOOL_HINTS.get(tool, ""))
         self.status_tool_label.setText(TOOL_LABELS.get(tool, tool.name.title()))
         self._refresh_style_controls()
+        if tool in (Tool.INK, Tool.MARKER, Tool.ERASER):
+            self._pen_panel_closed = False   # picking a pen tool again brings the panel back
+        self._update_pen_panel()
 
     def _refresh_style_controls(self):
         style = self.tool_styles[self.current_tool]
@@ -999,6 +1043,8 @@ class MainWindow(QMainWindow):
         self.font_family_combo.setCurrentText(style.get("fontname", fonts.DEFAULT_FONT))
         self.font_family_combo.blockSignals(False)
         self._update_property_visibility()
+        if hasattr(self, "pen_panel"):
+            self.pen_panel.refresh()
 
     def _set_stamp_name(self, name):
         self.current_stamp_name = name
@@ -1065,6 +1111,7 @@ class MainWindow(QMainWindow):
             self.current_color = color
             self._update_color_button(color)
             self._restyle_text_edit()
+            self.pen_panel.refresh()
 
     def _update_color_button(self, color):
         self.color_btn.setIcon(QIcon(swatch_pixmap(color)))
@@ -1184,6 +1231,7 @@ class MainWindow(QMainWindow):
 
     def toggle_dark_mode(self, checked):
         theme.set_mode(theme.DARK if checked else theme.LIGHT)
+        self.pen_panel.refresh()   # its colour chips and width dots are drawn in the look's colours
 
     def convert_document(self, fmt):
         tab = self.current_tab()

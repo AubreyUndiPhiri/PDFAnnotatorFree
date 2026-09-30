@@ -323,3 +323,37 @@ def test_ribbon_arrow_hides_and_shows_the_toolbars(app, tmp_path):
     w.open_files_as_tabs([str(pdf)])
     assert [w.tabs.tabText(i) for i in range(w.tabs.count())] == ["a.pdf"]
     w.close()
+
+
+def test_pen_panel_floats_while_the_ribbon_is_hidden(app):
+    from PySide6.QtGui import QColor as _QColor
+    from pdfannotator.main_window import MainWindow
+    from pdfannotator import theme as _theme
+
+    w = MainWindow()
+    w.resize(1000, 700)
+    w.show()
+    if not w.ribbon_shown:
+        w.act_ribbon.trigger()
+    w.set_tool(Tool.INK)
+    assert not w.pen_panel.isVisible()               # ribbon showing: no panel
+    w.act_ribbon.trigger()
+    assert w.pen_panel.isVisible()                   # pen + hidden ribbon: the panel floats
+    w.set_pen_color(_QColor("#2563eb"))
+    assert w.tool_styles[Tool.INK]["color"] == (37, 99, 235)
+    w.set_pen_width(4.0)
+    assert w.tool_styles[Tool.INK]["width"] == 4.0 and w.width_spin.value() == 4.0
+    was = w.pen_panel.vertical
+    w.pen_panel.toggle_orientation()
+    assert w.pen_panel.vertical != was and w.pen_panel.height() <= w.height()
+    w.pen_panel.toggle_orientation()
+    w.set_tool(Tool.SELECT)
+    assert w.pen_panel.isVisible()                   # stays while you pick Select from it
+    w.close_pen_panel()
+    assert not w.pen_panel.isVisible()
+    w.set_tool(Tool.MARKER)
+    assert w.pen_panel.isVisible()                   # a pen tool brings it back
+    w.act_ribbon.trigger()
+    assert not w.pen_panel.isVisible() and w.ribbon_shown
+    _theme._settings().setValue("ui/pen_panel_vertical", "false")
+    w.close()
