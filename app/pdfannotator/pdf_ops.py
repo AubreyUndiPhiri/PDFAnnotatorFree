@@ -1,5 +1,6 @@
 """Helper functions that operate directly on a fitz.Page to create/edit annotations."""
 import io
+import base64
 import json
 import zlib
 from functools import lru_cache
@@ -448,6 +449,95 @@ def insert_image(page: fitz.Page, rect, image_path: str = None, image_bytes: byt
 
 
 # ---------------------------------------------------------------------------
+# Pictures you place: a stamp annotation showing the picture (so it can be
+# selected, moved, resized and edited), with the original kept in the PDF
+# ---------------------------------------------------------------------------
+
+IMAGE_KEY = "AupImage"
+
+
+def add_image_stamp(page: fitz.Page, rect, image_bytes: bytes) -> fitz.Annot:
+    """A movable picture filling `rect` (keeping its proportions, centred)."""
+    pix = fitz.Pixmap(image_bytes)
+    rect = _fit(fitz.Rect(rect), pix.width, pix.height)
+    png = pix.tobytes("png")   # stamps take PNG/JPEG; PNG keeps transparency (a removed background)
+    annot = page.add_stamp_annot(rect, stamp=png)
+    annot.set_info(subject="Picture", title="Aupedean Annotator")
+    annot.update()
+    doc = page.parent
+    xref = doc.get_new_xref()
+    doc.update_object(xref, "<<>>")
+    doc.update_stream(xref, png)
+    doc.xref_set_key(annot.xref, IMAGE_KEY, f"{xref} 0 R")
+    return annot
+
+
+def _fit(rect, width, height):
+    if not width or not height or rect.is_empty:
+        return rect
+    scale = min(rect.width / width, rect.height / height)
+    w, h = width * scale, height * scale
+    x, y = rect.x0 + (rect.width - w) / 2, rect.y0 + (rect.height - h) / 2
+    return fitz.Rect(x, y, x + w, y + h)
+
+
+def image_stamp_bytes(annot):
+    """The picture (PNG bytes) of a picture stamp, else None."""
+    if annot is None or annot.type[0] != fitz.PDF_ANNOT_STAMP:
+        return None
+    doc = annot.parent.parent
+    kind, value = doc.xref_get_key(annot.xref, IMAGE_KEY)
+    if kind != "xref":
+        return None
+    try:
+        return doc.xref_stream(int(value.split()[0]))
+    except (ValueError, RuntimeError):
+        return None
+
+
+def is_image_stamp(annot) -> bool:
+    return image_stamp_bytes(annot) is not None
+
+
+def replace_image_stamp(page: fitz.Page, annot, image_bytes: bytes) -> fitz.Annot:
+    """Swap a picture stamp's picture for an edited one, in the same place
+    (the box keeps its width and takes the new proportions)."""
+    rect = fitz.Rect(annot.rect)
+    pix = fitz.Pixmap(image_bytes)
+    if pix.width and pix.height:
+        rect = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + rect.width * pix.height / pix.width)
+    page.delete_annot(annot)
+    return add_image_stamp(page, rect, image_bytes)
+
+
+def page_image_at(page: fitz.Page, point):
+    """(xref, bbox) of a picture that is part of the page's content under
+    `point` (the topmost), else None."""
+    found = None
+    for info in page.get_image_info(xrefs=True):
+        bbox = fitz.Rect(info["bbox"])
+        if info.get("xref") and bbox.contains(point):
+            found = (info["xref"], bbox)
+    return found
+
+
+def page_image_bytes(page: fitz.Page, xref) -> bytes:
+    """A page picture as PNG (with its transparency, if it has a mask)."""
+    pix = fitz.Pixmap(page.parent, xref)
+    if pix.alpha == 0:
+        smask = page.parent.xref_get_key(xref, "SMask")
+        if smask[0] == "xref":
+            pix = fitz.Pixmap(pix, fitz.Pixmap(page.parent, int(smask[1].split()[0])))
+    if pix.colorspace and pix.colorspace.n > 3:
+        pix = fitz.Pixmap(fitz.csRGB, pix)
+    return pix.tobytes("png")
+
+
+def replace_page_image(page: fitz.Page, xref, image_bytes: bytes):
+    page.replace_image(xref, stream=image_bytes)
+
+
+# ---------------------------------------------------------------------------
 # Formulas: LaTeX rendered to a picture, kept in a stamp annotation together
 # with its source so it can be moved, resized and edited again
 # ---------------------------------------------------------------------------
@@ -683,6 +773,8 @@ def serialize_annot(annot: fitz.Annot) -> dict:
         data["text_style"] = freetext_style(annot)
     elif type_name == "Stamp" and is_formula(annot):
         data["formula"] = formula_data(annot)
+    elif type_name == "Stamp" and is_image_stamp(annot):
+        data["image"] = base64.b64encode(image_stamp_bytes(annot)).decode()
     return data
 
 
@@ -750,6 +842,10 @@ def deserialize_and_add(page: fitz.Page, data: dict, offset=(0.0, 0.0), override
         annot.set_colors(stroke=stroke)
         annot.update()
         return annot
+    if type_name == "Stamp" and data.get("image"):
+        r = data["rect"]
+        rect = fitz.Rect(r[0] + dx, r[1] + dy, r[2] + dx, r[3] + dy)
+        return add_image_stamp(page, rect, base64.b64decode(data["image"]))
     if type_name == "Stamp" and data.get("formula"):
         from . import formula
 

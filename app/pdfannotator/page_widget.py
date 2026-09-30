@@ -1,9 +1,9 @@
 import time
 
 import pymupdf as fitz
-from PySide6.QtWidgets import QWidget
-from PySide6.QtGui import QPainter, QPainterPath, QPixmap, QImage, QPen, QColor
-from PySide6.QtCore import Qt, QPoint, QPointF, QRect
+from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtGui import QPainter, QPainterPath, QPixmap, QImage, QPen, QColor, QPointingDevice
+from PySide6.QtCore import QEvent, Qt, QPoint, QPointF, QRect
 
 from . import handles, pdf_ops, strokes, theme
 from .tools import Tool
@@ -60,6 +60,10 @@ class PageWidget(QWidget):
         self._speed_pressure = None
         self._tablet_pressure = None
         self._tablet_time = 0.0
+        self._pan_by_button = None        # middle button / pen barrel button held: panning
+        self._tool_before_eraser = None   # the pen's eraser end is in use
+        self._last_tablet_press = None    # (time, pos): a double-tap is a double-click
+        self.setAttribute(Qt.WA_TabletTracking)   # the pen hovering updates the cursor
 
         self._polygon_points_px = []
         self._polygon_rubber_px = None
@@ -186,11 +190,59 @@ class PageWidget(QWidget):
             painter.drawPath(path)
         painter.setRenderHint(QPainter.Antialiasing, False)
 
-    # ---- pen tablets / styluses: remember the pressure of the latest reading
+    # ---- pen tablets / styluses
     def tabletEvent(self, event):
+        """The pen drives the tools directly (every reading, with its pressure,
+        no mouse emulation in between). Its eraser end erases while it's
+        turned over; a barrel button set to right-click opens the page menu,
+        and one set to middle-click pans the page."""
         self._tablet_pressure = event.pressure()
         self._tablet_time = time.monotonic()
-        event.ignore()  # Qt then sends the matching mouse event, which the tools use
+        kind = event.type()
+        pos = self._event_pos(event)
+        if kind == QEvent.TabletPress:
+            if event.button() == Qt.RightButton:
+                event.accept()
+                self.controller.show_page_menu(self, pos, event.globalPosition().toPoint())
+                return
+            if event.button() == Qt.MiddleButton:
+                self._pan_by_button = pos
+                event.accept()
+                return
+            if event.pointerType() == QPointingDevice.PointerType.Eraser \
+                    and self.controller.current_tool != Tool.ERASER:
+                self._tool_before_eraser = self.controller.current_tool
+                self.controller.window.set_tool(Tool.ERASER)
+            now = time.monotonic()
+            last = self._last_tablet_press
+            self._last_tablet_press = (now, pos)
+            if last and now - last[0] < QApplication.doubleClickInterval() / 1000 \
+                    and (pos - last[1]).manhattanLength() < 8:
+                self._last_tablet_press = None
+                self.mouseDoubleClickEvent(event)
+            else:
+                self.mousePressEvent(event)
+        elif kind == QEvent.TabletMove:
+            if self._pan_by_button is not None:
+                delta = pos - self._pan_by_button
+                self.controller.pan_scroll(delta.x(), delta.y())
+                self._pan_by_button = pos
+            else:
+                self.mouseMoveEvent(event)
+        elif kind == QEvent.TabletRelease:
+            if self._pan_by_button is not None:
+                self._pan_by_button = None
+            elif event.button() != Qt.RightButton:
+                self.mouseReleaseEvent(event)
+            if self._tool_before_eraser is not None:
+                self.controller.window.set_tool(self._tool_before_eraser)
+                self._tool_before_eraser = None
+        event.accept()
+
+    def contextMenuEvent(self, event):
+        if not self.rendered or self.controller.current_tool == Tool.ZOOM:
+            return   # the Zoom tool zooms out on right-click instead
+        self.controller.show_page_menu(self, event.pos(), event.globalPos())
 
     def _pressure_now(self, pos_f, event):
         if self._tablet_pressure is not None and time.monotonic() - self._tablet_time < TABLET_FRESH_S:
@@ -243,6 +295,10 @@ class PageWidget(QWidget):
     # ---------------------------------------------------------------
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.MiddleButton:          # middle button: drag the page around
+            self._pan_by_button = self._event_pos(event)
+            self.setCursor(Qt.ClosedHandCursor)
+            return
         if not self.rendered or event.button() not in (Qt.LeftButton, Qt.RightButton):
             return
         tool = self.controller.current_tool
@@ -311,6 +367,11 @@ class PageWidget(QWidget):
     def mouseMoveEvent(self, event):
         pos = self._event_pos(event)
         tool = self.controller.current_tool
+        if self._pan_by_button is not None:
+            delta = pos - self._pan_by_button
+            self.controller.pan_scroll(delta.x(), delta.y())
+            self._pan_by_button = pos
+            return
 
         if tool == Tool.LASER_POINTER:
             self.controller.update_laser_pointer(self, pos)
@@ -391,6 +452,10 @@ class PageWidget(QWidget):
     def mouseReleaseEvent(self, event):
         pos = self._event_pos(event)
         tool = self.controller.current_tool
+        if self._pan_by_button is not None and event.button() == Qt.MiddleButton:
+            self._pan_by_button = None
+            self.apply_tool_cursor()
+            return
 
         if tool == Tool.SELECT:
             self.controller.end_select_drag(self, pos)

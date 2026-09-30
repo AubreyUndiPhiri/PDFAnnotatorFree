@@ -17,6 +17,7 @@ overlays stay consistent; code reads theme.X when it paints, so set_mode()
 switches the whole app live (icons.py re-tints its icons the same way).
 apply() is idempotent and is called from both main.py and MainWindow (the
 tests build a MainWindow without main())."""
+import sys
 import tempfile
 from pathlib import Path
 
@@ -208,10 +209,11 @@ QToolTip {{ background: {s['tooltip']}; color: {s['tooltip_text']}; border: none
 QLabel, QCheckBox, QRadioButton {{ color: {TEXT}; background: transparent; }}
 
 /* ---- menus */
-QMenuBar {{ background: transparent; border: none; padding: 4px 8px 0 8px; color: {TEXT}; }}
-QMenuBar::item {{ padding: 5px 11px; border-radius: {r}px; background: transparent; }}
+QMenuBar {{ background: transparent; border: none; padding: 2px 8px 0 8px; color: {TEXT}; }}
+QMenuBar::item {{ padding: 4px 10px; border-radius: {r}px; background: transparent; }}
 QMenuBar::item:selected {{ background: {s['raised_hover']}; }}
-QMenu {{ background: {s['popup']}; border: 1px solid {s['popup_edge']}; border-radius: {r + 2}px; padding: 6px; color: {TEXT}; }}
+QMenu {{ background: {s['popup']}; border: 1px solid {s['popup_edge']}; border-radius: {0 if sys.platform == "win32" else r + 2}px;
+    padding: 6px; color: {TEXT}; }}
 QMenu::item {{ padding: 6px 28px 6px 10px; border-radius: {max(5, r - 3)}px; background: transparent; }}
 QMenu::item:selected {{ background: {s['item_hover']}; color: {TEXT}; }}
 QMenu::item:disabled {{ color: {ICON_DISABLED}; }}
@@ -219,10 +221,10 @@ QMenu::icon {{ padding-left: 8px; }}
 QMenu::separator {{ height: 1px; background: {BORDER}; margin: 5px 6px; }}
 
 /* ---- toolbars: floating glass / clay bars */
-QToolBar {{ background: {s['panel']}; {panel_edges} border-radius: {br}px; margin: 4px 8px 2px 8px;
-    padding: 4px 8px; spacing: 3px; }}
+QToolBar {{ background: {s['panel']}; {panel_edges} border-radius: {br}px; margin: 3px 8px 1px 8px;
+    padding: 2px 6px; spacing: 2px; }}
 QToolBar::separator {{ background: {BORDER}; width: 1px; margin: 7px 6px; }}
-QToolButton {{ background: transparent; border: 1px solid transparent; border-radius: {r}px; padding: 4px; color: {TEXT}; }}
+QToolButton {{ background: transparent; border: 1px solid transparent; border-radius: {r}px; padding: 3px; color: {TEXT}; }}
 QToolButton:hover {{ background: {s['raised_hover']}; {raised_edges} }}
 QToolButton:pressed {{ background: {s['pressed']}; {pressed_edges} }}
 QToolButton:checked {{ background: {s['checked']}; {checked_edges} }}
@@ -246,7 +248,7 @@ QTabWidget::pane {{ border: none; background: {s['pages']}; }}
 QTabBar {{ background: transparent; qproperty-drawBase: 0; }}
 QTabWidget::tab-bar {{ border: none; }}
 QMainWindow::separator {{ background: transparent; width: 0; height: 0; }}
-QTabBar::tab {{ background: transparent; color: {TEXT_MUTED}; padding: 7px 10px 7px 14px; margin: 4px 0 2px 6px;
+QTabBar::tab {{ background: transparent; color: {TEXT_MUTED}; padding: 4px 8px 4px 12px; margin: 2px 0 1px 6px;
     border: 1px solid transparent; border-radius: {r}px; min-width: 90px; }}
 QTabBar::tab:hover {{ background: {s['raised_hover']}; color: {TEXT}; }}
 QTabBar::tab:selected {{ background: {s['tab']}; color: {TEXT}; {raised_edges} }}
@@ -321,7 +323,7 @@ QHeaderView::section {{ background: {s['raised']}; color: {TEXT_MUTED}; border: 
     padding: 6px 8px; font-weight: 600; }}
 
 /* ---- status bar */
-QStatusBar {{ background: {s['panel']}; {panel_edges} border-radius: {br}px; margin: 2px 8px 6px 8px; min-height: 26px;
+QStatusBar {{ background: {s['panel']}; {panel_edges} border-radius: {br}px; margin: 1px 8px 4px 8px; min-height: 22px;
     color: {TEXT_MUTED}; }}
 QStatusBar QLabel {{ color: {TEXT_MUTED}; padding: 0 8px; }}
 QStatusBar::item {{ border: none; }}
@@ -381,10 +383,12 @@ def _palette() -> QPalette:
 
 class _RoundedPopups(QObject):
     """Menus are separate windows: without a translucent background their
-    rounded corners are filled in square."""
+    rounded corners are filled in (black, on Windows). On Windows 11 the
+    system rounds them instead (with its soft shadow, see _style_frame);
+    elsewhere they are made translucent so the style sheet's corners show."""
 
     def eventFilter(self, obj, event):
-        if event.type() == QEvent.Polish and isinstance(obj, QMenu):
+        if event.type() == QEvent.Polish and isinstance(obj, QMenu) and sys.platform != "win32":
             obj.setAttribute(Qt.WA_TranslucentBackground)
             obj.setWindowFlag(Qt.NoDropShadowWindowHint)
         return False
@@ -437,7 +441,7 @@ _FRAME = {
     DARK: {"caption": "#15131f", "text": "#ececf2", "border": "#1f1c2c"},
 }
 _DWMWA_DARK_MODE, _DWMWA_CORNERS, _DWMWA_BORDER, _DWMWA_CAPTION, _DWMWA_TEXT = 20, 33, 34, 35, 36
-_DWMWCP_ROUNDSMALL = 3
+_DWMWCP_ROUND, _DWMWCP_ROUNDSMALL = 2, 3
 
 
 def _dwm_set(widget, attribute, value):
@@ -463,7 +467,8 @@ def _style_frame(widget):
     system bar sits above a white clay-glass window; small popups (lists,
     tooltips) get the system's rounded corners."""
     if isinstance(widget, QMenu):
-        return   # menus draw their own rounded corners
+        _dwm_set(widget, _DWMWA_CORNERS, _DWMWCP_ROUND)   # rounded by the system: no black corners
+        return
     kind = widget.windowType()
     if kind in (Qt.Popup, Qt.ToolTip):
         _dwm_set(widget, _DWMWA_CORNERS, _DWMWCP_ROUNDSMALL)

@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QInputDialog, QColorDialog, QSpinBox, QDoubleSpinBox, QComboBox, QLabel,
     QStatusBar, QMenu, QWidget, QSizePolicy, QWidgetAction,
 )
-from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QShortcut, QIcon, QPixmap, QPainter
+from PySide6.QtGui import QAction, QActionGroup, QColor, QGuiApplication, QKeySequence, QShortcut, QIcon, QPixmap, QPainter
 from PySide6.QtCore import Qt, QSize, QRectF
 
 from .document_tab import DocumentTab
@@ -115,6 +115,8 @@ class MainWindow(QMainWindow):
         self.tabs.tabBar().setExpanding(False)
         self.tabs.tabBar().setElideMode(Qt.ElideMiddle)
         self.tabs.tabCloseRequested.connect(self.close_tab)
+        self.tabs.tabBar().setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tabs.tabBar().customContextMenuRequested.connect(self._tab_menu)
         self.tabs.currentChanged.connect(self._on_tab_switched)
         self.setCentralWidget(self.tabs)
 
@@ -139,6 +141,39 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._build_menu()
         self._build_ribbon_toggle()
+
+    def _tab_menu(self, pos):
+        """Right-click on a document tab."""
+        from PySide6.QtWidgets import QMenu
+
+        bar = self.tabs.tabBar()
+        index = bar.tabAt(pos)
+        if index < 0:
+            return
+        widget = self.tabs.widget(index)
+        path = self.tab_path(widget)
+        menu = QMenu(self)
+        menu.addAction(icons.icon("close"), "Close", lambda: self.close_tab(self.tabs.indexOf(widget)))
+
+        def close_others():
+            for i in reversed(range(self.tabs.count())):
+                if self.tabs.widget(i) is not widget:
+                    self.close_tab(i)
+
+        others = menu.addAction("Close Others", close_others)
+        others.setEnabled(self.tabs.count() > 1)
+        menu.addAction("Close All", lambda: [self.close_tab(i) for i in reversed(range(self.tabs.count()))])
+        menu.addSeparator()
+        folder = menu.addAction(icons.icon("folder"), "Show in Folder",
+                                lambda: __import__("subprocess").Popen(["explorer", "/select,", os.path.normpath(path)]))
+        copy = menu.addAction(icons.icon("copy"), "Copy File Path",
+                              lambda: QGuiApplication.clipboard().setText(os.path.normpath(path)))
+        folder.setEnabled(bool(path) and os.name == "nt")
+        copy.setEnabled(bool(path))
+        self.exec_menu(menu, bar.mapToGlobal(pos))
+
+    def exec_menu(self, menu, global_pos):
+        menu.exec(global_pos)
 
     def _build_ribbon_toggle(self):
         """The arrow at the far right of the menu bar: hides the toolbars (the
@@ -202,6 +237,10 @@ class MainWindow(QMainWindow):
         editor = isinstance(self.tabs.currentWidget(), EditorTab)
         self.nav_toolbar.setVisible(self.ribbon_shown and self.nav_toolbar_action.isChecked())
         self.tool_toolbar.setVisible(self.ribbon_shown and self.tool_toolbar_action.isChecked() and not editor)
+        for i in range(self.tabs.count()):
+            tab = self.tabs.widget(i)
+            if isinstance(tab, DocumentTab):
+                tab.set_compact(not self.ribbon_shown)
         self._update_pen_panel()
         if hasattr(self, "ribbon_btn"):
             self.ribbon_btn.setIcon(icons.icon("chevron-up" if self.ribbon_shown else "chevron-down"))
@@ -731,6 +770,8 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------
 
     def _add_tab(self, tab, title, icon="note"):
+        if isinstance(tab, DocumentTab):
+            tab.set_compact(not getattr(self, "ribbon_shown", True))
         index = self.tabs.addTab(tab, icons.icon(icon), title)
         close_btn = QToolButton()
         close_btn.setIcon(icons.icon("close"))

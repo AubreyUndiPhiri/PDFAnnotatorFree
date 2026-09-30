@@ -4,10 +4,10 @@ import pymupdf as fitz
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QFileDialog, QMessageBox,
-    QInputDialog, QToolButton,
+    QDialog, QInputDialog, QToolButton,
 )
-from PySide6.QtGui import QGuiApplication, QImage, QPixmap, QPainter, QColor
-from PySide6.QtCore import Qt, QPoint, QPointF, QRectF, QSize, QTimer
+from PySide6.QtGui import QGuiApplication, QIcon, QImage, QPixmap, QPainter, QColor
+from PySide6.QtCore import QEvent, Qt, QPoint, QPointF, QRectF, QSize, QTimer
 
 from .document import PDFDocument
 from .page_widget import PageWidget
@@ -17,7 +17,7 @@ from .inline_text import InlineTextEditor
 from .formula_editor import FormulaEditor
 from . import handles
 from .tools import Tool, TOOL_HINTS, UNITS
-from . import fonts, pdf_ops, strokes, theme
+from . import fonts, icons, pdf_ops, strokes, theme
 
 
 class PageCanvas(QWidget):
@@ -150,6 +150,7 @@ class DocumentTab(QWidget):
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setWidget(self.pages_container)
         self.scroll_area.verticalScrollBar().valueChanged.connect(self.update_visible_pages)
+        self._install_gestures()
 
         self.laser_dot = LaserDot(self.pages_container)
 
@@ -336,7 +337,71 @@ class DocumentTab(QWidget):
     # Zoom
     # ---------------------------------------------------------------
 
-    def set_zoom(self, zoom, anchor_widget=None, anchor_pixel=None):
+    def set_compact(self, compact):
+        """With the ribbon hidden the pages get more room: smaller gaps around and between them."""
+        margin, gap = (10, 12) if compact else (24, 20)
+        self.pages_layout.setContentsMargins(margin, margin, margin, margin)
+        self.pages_layout.setSpacing(gap)
+
+    # ---- pinch to zoom: trackpad pinches (Ctrl + wheel on Windows, native
+    # gestures elsewhere), touch-screen pinches and Ctrl + mouse wheel, all
+    # smooth, keeping the spot under the fingers / pointer where it is
+    def _install_gestures(self):
+        viewport = self.scroll_area.viewport()
+        viewport.installEventFilter(self)
+        viewport.setAttribute(Qt.WA_AcceptTouchEvents)
+        viewport.grabGesture(Qt.PinchGesture)
+        self._pinch_target = None     # (zoom, page widget, pixel on it, viewport point) waiting to be applied
+        self._pinch_timer = QTimer(self)
+        self._pinch_timer.setSingleShot(True)
+        self._pinch_timer.setInterval(24)   # a few frames' worth of gesture per re-render
+        self._pinch_timer.timeout.connect(self._apply_pinch)
+
+    def eventFilter(self, obj, event):
+        if obj is not self.scroll_area.viewport():
+            return False
+        kind = event.type()
+        if kind == QEvent.Wheel and event.modifiers() & Qt.ControlModifier:
+            delta = event.angleDelta().y() or event.pixelDelta().y()
+            if delta:
+                self._pinch(1.0015 ** delta, event.position().toPoint())
+            return True
+        if kind == QEvent.NativeGesture and event.gestureType() == Qt.ZoomNativeGesture:
+            self._pinch(1.0 + event.value(), event.position().toPoint())
+            return True
+        if kind == QEvent.Gesture:
+            pinch = event.gesture(Qt.PinchGesture)
+            if pinch is not None:
+                center = obj.mapFromGlobal(pinch.centerPoint().toPoint())
+                self._pinch(pinch.scaleFactor(), center)
+                return True
+        return False
+
+    def _pinch(self, factor, viewport_pos):
+        base = self._pinch_target[0] if self._pinch_target else self.zoom
+        target = max(0.2, min(base * factor, 6.0))
+        anchor = self._page_at(viewport_pos)
+        self._pinch_target = (target, *anchor, viewport_pos) if anchor else (target, None, None, viewport_pos)
+        if not self._pinch_timer.isActive():
+            self._pinch_timer.start()
+
+    def _page_at(self, viewport_pos):
+        point = self.scroll_area.viewport().mapTo(self.pages_container, viewport_pos)
+        for pw in self.page_widgets:
+            if pw.geometry().contains(point):
+                return pw, point - pw.pos()
+        return None
+
+    def _apply_pinch(self):
+        if self._pinch_target is None:
+            return
+        zoom, widget, pixel, viewport_pos = self._pinch_target
+        self._pinch_target = None
+        self.set_zoom(zoom, widget, pixel, keep_at=viewport_pos)
+
+    def set_zoom(self, zoom, anchor_widget=None, anchor_pixel=None, keep_at=None):
+        """`anchor_pixel` on `anchor_widget` ends up in the middle of the view,
+        or at `keep_at` (a viewport point) when given: the zoom stays put under the pointer."""
         self.finish_text_editing()
         zoom = max(0.2, min(zoom, 6.0))
         if abs(zoom - self.zoom) < 1e-6:
@@ -361,8 +426,9 @@ class DocumentTab(QWidget):
                     self.pages_container, QPoint(int(new_pixel_point.x), int(new_pixel_point.y))
                 )
                 viewport = self.scroll_area.viewport()
-                self.scroll_area.horizontalScrollBar().setValue(target.x() - viewport.width() // 2)
-                self.scroll_area.verticalScrollBar().setValue(target.y() - viewport.height() // 2)
+                at = keep_at if keep_at is not None else QPoint(viewport.width() // 2, viewport.height() // 2)
+                self.scroll_area.horizontalScrollBar().setValue(target.x() - at.x())
+                self.scroll_area.verticalScrollBar().setValue(target.y() - at.y())
             QTimer.singleShot(0, _rescroll)
 
     def zoom_in(self):
@@ -740,7 +806,8 @@ class DocumentTab(QWidget):
             elif tool == Tool.IMAGE_STAMP:
                 if not self.pending_image_path:
                     return
-                pdf_ops.insert_image(page, rect, image_path=self.pending_image_path)
+                with open(self.pending_image_path, "rb") as f:   # movable, and editable later (Edit Photo)
+                    pdf_ops.add_image_stamp(page, rect, f.read())
                 self.pending_image_path = None
                 self.window.set_tool(Tool.SELECT)
             else:
@@ -764,6 +831,87 @@ class DocumentTab(QWidget):
         widget.render()
         self.refresh_thumbnail(widget.page_index)
 
+    # ---- right-click menu on the page, and Edit Photo
+    def show_page_menu(self, widget, pos, global_pos):
+        """What you can do with the thing under the pointer (or the page)."""
+        from PySide6.QtWidgets import QMenu
+
+        self.finish_text_editing()
+        w = self.window
+        page = widget.page()
+        point = widget.to_pdf_point(pos)
+        annot = pdf_ops.find_annot_at(page, point)
+        page_image = None if annot is not None else pdf_ops.page_image_at(page, point)
+        menu = QMenu(self)
+
+        def add(text, slot, icon=None, enabled=True):
+            act = menu.addAction(icons.icon(icon) if icon else QIcon(), text)
+            act.triggered.connect(slot)
+            act.setEnabled(enabled)
+            return act
+
+        if annot is not None:
+            if not any(a.xref == annot.xref for i, a in self.selected if i == widget.page_index):
+                self.selected = [(widget.page_index, annot)]
+                widget.update()
+            if pdf_ops.is_image_stamp(annot):
+                add("Edit Photo...", lambda: self.edit_photo(widget, annot=annot), "image")
+            if pdf_ops.is_text_box(annot):
+                add("Edit Text", lambda: self.begin_text_edit(widget, annot=annot), "textbox")
+            if pdf_ops.is_formula(annot):
+                add("Edit Formula", lambda: self.begin_formula_edit(widget, annot=annot), "formula")
+            if annot.type[0] == fitz.PDF_ANNOT_TEXT:
+                add("Edit Note...", lambda: self.try_edit_annot_text(widget, pos), "note")
+            menu.addSeparator()
+            menu.addActions([w.act_cut, w.act_copy])
+            menu.addAction(w.act_delete)
+            menu.addSeparator()
+        elif page_image is not None:
+            xref = page_image[0]
+            add("Edit Photo...", lambda: self.edit_photo(widget, xref=xref), "image")
+            menu.addSeparator()
+        menu.addAction(w.act_paste)
+        w.act_paste.setEnabled(bool(w.annotation_clipboard))
+        add("Add Note Here...", lambda: self.place_note(widget, pos), "note")
+        menu.addAction(w.act_image)
+        menu.addSeparator()
+        add("Select Tool", lambda: w.set_tool(Tool.SELECT), "select")
+        menu.addActions([w.act_zoom_in, w.act_zoom_out, w.act_fit_width])
+        self.exec_menu(menu, global_pos)
+        w.act_paste.setEnabled(True)
+
+    def exec_menu(self, menu, global_pos):
+        menu.exec(global_pos)
+
+    def edit_photo(self, widget, annot=None, xref=None):
+        """Open the picture (a placed picture stamp, or a picture in the page
+        itself) in Edit Photo, and put the result back in the same place."""
+        from .image_editor import ImageEditorDialog
+
+        page = widget.page()
+        try:
+            data = pdf_ops.image_stamp_bytes(annot) if annot is not None else pdf_ops.page_image_bytes(page, xref)
+            dlg = ImageEditorDialog(data, self)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "Edit Photo", f"This picture can't be edited:\n{e}")
+            return
+        if dlg.exec() != QDialog.Accepted:
+            return
+        png = dlg.result_png()
+        try:
+            if annot is not None:
+                new = pdf_ops.replace_image_stamp(page, annot, png)
+                self.selected = [(widget.page_index, new)]
+            else:
+                pdf_ops.replace_page_image(page, xref, png)
+                self.selected = []
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "Edit Photo", f"The edited picture couldn't be put back:\n{e}")
+            return
+        self.document.snapshot()
+        widget.render()
+        self.refresh_thumbnail(widget.page_index)
+
     def try_edit_annot_text(self, widget, pos):
         """Double-click: edit a text box in place, or a sticky note's comment."""
         page = widget.page()
@@ -775,6 +923,9 @@ class DocumentTab(QWidget):
             return
         if pdf_ops.is_formula(annot):
             self.begin_formula_edit(widget, annot=annot)
+            return
+        if pdf_ops.is_image_stamp(annot):
+            self.edit_photo(widget, annot=annot)
             return
         if annot.type[0] != fitz.PDF_ANNOT_TEXT:
             return
