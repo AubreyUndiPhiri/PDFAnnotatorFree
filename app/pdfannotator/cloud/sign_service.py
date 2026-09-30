@@ -15,6 +15,7 @@ The client, the encryption and the installer have no Qt; the manager does.
 import base64
 import json
 import os
+import re
 import secrets
 import time
 import urllib.parse
@@ -338,18 +339,48 @@ def normalize_brevo_key(api_key):
     return api_key
 
 
+def _reply_details(e):
+    """What else the refusal said: its body (as text) and tell-tale headers."""
+    text = e.body.decode("utf-8", "replace") if isinstance(e.body, bytes) else str(e.body or "")
+    text = " ".join(re.sub(r"<(script|style)[^>]*>.*?</\1>|<[^>]+>", " ", text, flags=re.S | re.I).split())
+    heads = {k.lower(): v for k, v in (e.headers or {}).items()}
+    extra = [f"reply: {text[:300]}" if text else "reply: (empty)"]
+    extra += [f"{k}: {heads[k]}" for k in ("server", "cf-ray", "x-sib-server") if k in heads]
+    return "\n" + "\n".join(extra)
+
+
+def _firewall_page(e):
+    """True for a 403 from the firewall in front of Brevo (an HTML page), not from Brevo itself."""
+    heads = {k.lower(): v for k, v in (e.headers or {}).items()}
+    body = e.body.decode("utf-8", "replace").lower() if isinstance(e.body, bytes) else ""
+    return e.status == 403 and ("html" in heads.get("content-type", "") or "<html" in body
+                                or "attention required" in body or "access denied" in body)
+
+
 def check_brevo(api_key):
     """(account email, [verified sender emails]) for a Brevo API key."""
     for_mcp = not "".join(api_key.split()).startswith(("xkeysib-", "xsmtpsib-"))   # the eyJ... kind
     api_key = normalize_brevo_key(api_key)
     headers = {"api-key": api_key, "accept": "application/json"}
+    step = "/account"
     try:
-        _s, _h, raw = http_request("GET", BREVO_API + "/account", headers=headers, timeout=30)
+        _s, _h, raw = http_request("GET", BREVO_API + step, headers=headers, timeout=30)
         account = json.loads(raw)
-        _s, _h, raw = http_request("GET", BREVO_API + "/senders", headers=headers, timeout=30)
-        senders = [s["email"].lower() for s in json.loads(raw).get("senders", []) if s.get("active", True)]
+        step = "/senders"
+        try:
+            _s, _h, raw = http_request("GET", BREVO_API + step, headers=headers, timeout=30)
+            senders = [s["email"].lower() for s in json.loads(raw).get("senders", []) if s.get("active", True)]
+        except ApiError as e:
+            if e.status != 403:
+                raise
+            senders = []   # the key may not list senders; sending can still work, so don't stop here
     except ApiError as e:
-        detail = f"\n\nBrevo said ({e.status}): {e.message}"
+        detail = f"\n\nBrevo said ({e.status}) to GET {step}: {e.message}" + _reply_details(e)
+        if _firewall_page(e):
+            raise SetupError("Brevo's firewall blocked this computer before it looked at the key. This happens "
+                             "behind a VPN, proxy, some antivirus web shields, or on a network Brevo distrusts. "
+                             "Turn the VPN or proxy off (or try another network, such as your phone's hotspot) "
+                             "and install again." + detail) from e
         if "ip address" in e.message.lower():
             raise SetupError("Brevo blocked the request because it came from an IP address it doesn't know. "
                              "Under Security > Authorised IPs, add this IP or turn the check off." + detail,

@@ -42,6 +42,18 @@ class FakeApis:
                 if path.startswith("/brevo/"):
                     if self.headers.get("api-key") == "xkeysib-forbidden":
                         return self._reply(403, {})
+                    if self.headers.get("api-key") == "xkeysib-firewalled":
+                        page = b"<html><title>Attention Required! | Cloudflare</title>Sorry, you have been blocked</html>"
+                        self.send_response(403)
+                        self.send_header("Content-Type", "text/html")
+                        self.send_header("Server", "cloudflare")
+                        self.send_header("Content-Length", str(len(page)))
+                        self.end_headers()
+                        return self.wfile.write(page)
+                    if self.headers.get("api-key") == "xkeysib-nosenders":
+                        if path == "/brevo/account":
+                            return self._reply(200, {"email": "owner@example.com"})
+                        return self._reply(403, {})
                     if self.headers.get("api-key") != "xkeysib-good":
                         return self._reply(401, {"message": "Key not found"})
                     if path == "/brevo/account":
@@ -116,6 +128,10 @@ def test_install_explains_bad_keys(apis):
         sign_service.install("cf-good", "xkeysib-bad", "o@example.com", "o@example.com", wait_online=0)
     with pytest.raises(sign_service.SetupError, match="isn't activated yet"):
         sign_service.install("cf-good", "xkeysib-forbidden", "o@example.com", "o@example.com", wait_online=0)
+    with pytest.raises(sign_service.SetupError, match="firewall blocked this computer") as info:
+        sign_service.install("cf-good", "xkeysib-firewalled", "o@example.com", "o@example.com", wait_online=0)
+    assert "GET /account" in str(info.value) and "you have been blocked" in str(info.value)
+    assert sign_service.check_brevo("xkeysib-nosenders") == ("owner@example.com", [])   # senders are optional
     mcp = base64.b64encode(b'{"api_key": "xkeysib-forbidden"}').decode()
     with pytest.raises(sign_service.SetupError, match="made for MCP"):
         sign_service.install("cf-good", mcp, "o@example.com", "o@example.com", wait_online=0)

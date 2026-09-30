@@ -48,9 +48,10 @@ class AuthError(Exception):
 
 
 class ApiError(Exception):
-    def __init__(self, status, message, reason=""):
+    def __init__(self, status, message, reason="", body=b"", headers=None):
         super().__init__(message)
         self.status, self.message, self.reason = status, message, reason
+        self.body, self.headers = body, headers or {}   # the raw reply, for explaining odd refusals
 
 
 class Offline(Exception):
@@ -156,7 +157,7 @@ def http_request(method, url, params=None, data=None, headers=None, timeout=TIME
                 reason = parsed.get("code", "")
         except (ValueError, AttributeError):
             pass
-        raise ApiError(e.code, str(message), reason) from None
+        raise ApiError(e.code, str(message), reason, body, dict(e.headers or {})) from None
     except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
         raise Offline(f"Can't reach Google ({getattr(e, 'reason', e)}).") from None
 
