@@ -2,15 +2,15 @@
 
 Two looks share one style sheet:
 
-- light: glassmorphism and claymorphism together. The pastel gradient
-  backdrop shows through frosted, translucent panels (glass), and those
-  panels are puffy like clay: lit from the top with a bright rim, a soft
-  underside, a real drop shadow under the floating bars, raised pill
+- light: white clay-glass. A near-white backdrop washed with soft pastel
+  tints (periwinkle, lilac, mint) shows through frosted white panels
+  (glass), and those panels are puffy like clay: lit from the top with a
+  bright rim, a soft lavender underside and drop shadow, raised pill
   buttons and pressed / active controls that sink in.
-- dark: claymorphism. A matte dark backdrop with soft, puffy panels; each
-  raised surface is a vertical gradient with a light top edge and a dark
-  bottom edge (Qt style sheets have no box-shadow), pressed and checked
-  controls invert that so they look pushed in.
+- dark: black premium clay. A deep black backdrop with a faint violet glow;
+  charcoal clay panels, each a vertical gradient with a fine light rim on
+  top and a black edge below, floating on soft black shadows; soft lilac
+  accents. Pressed and checked controls invert the edges so they sink in.
 
 Every colour used by the UI lives here so screens, dialogs and painted
 overlays stay consistent; code reads theme.X when it paints, so set_mode()
@@ -29,44 +29,44 @@ LIGHT, DARK = "light", "dark"
 # ---- colour tokens (plain colours: QColor-readable, used in painting code)
 _TOKENS = {
     LIGHT: {
-        "WINDOW": "#eef1fb",
+        "WINDOW": "#f6f7fc",
         "SURFACE": "#ffffff",
-        "SURFACE_ALT": "#f3f5fb",
-        "CANVAS": "#38ffffff",          # frost over the backdrop, behind the PDF pages (#AARRGGBB)
-        "BORDER": "#dfe4f0",
-        "BORDER_STRONG": "#c5cde0",
-        "TEXT": "#1b2236",
-        "TEXT_MUTED": "#5d6781",
-        "ICON": "#3f4960",
-        "ICON_HOVER": "#1b2236",
-        "ICON_DISABLED": "#b3bacb",
-        "ACCENT": "#4f46e5",
-        "ACCENT_HOVER": "#4338ca",
-        "ACCENT_PRESSED": "#3730a3",
-        "ACCENT_SOFT": "#e6e8fd",
-        "ACCENT_SOFT_BORDER": "#c3c6f7",
+        "SURFACE_ALT": "#f5f6fb",
+        "CANVAS": "#2effffff",          # frost over the backdrop, behind the PDF pages (#AARRGGBB)
+        "BORDER": "#e6e8f2",
+        "BORDER_STRONG": "#cfd4e4",
+        "TEXT": "#1d2233",
+        "TEXT_MUTED": "#626a82",
+        "ICON": "#454d63",
+        "ICON_HOVER": "#1d2233",
+        "ICON_DISABLED": "#b8bdcc",
+        "ACCENT": "#6366f1",             # soft periwinkle
+        "ACCENT_HOVER": "#575ae6",
+        "ACCENT_PRESSED": "#4b4ed6",
+        "ACCENT_SOFT": "#eceefe",
+        "ACCENT_SOFT_BORDER": "#c9ccfa",
         "DANGER": "#dc2626",
-        "PAGE_SHADOW": QColor(40, 50, 110, 46),
+        "PAGE_SHADOW": QColor(70, 70, 140, 34),
     },
     DARK: {
-        "WINDOW": "#1e2130",
-        "SURFACE": "#2a2e3f",
-        "SURFACE_ALT": "#32374b",
-        "CANVAS": "#171a24",
-        "BORDER": "#353a4f",
-        "BORDER_STRONG": "#454b63",
-        "TEXT": "#e9ebf3",
-        "TEXT_MUTED": "#9ba2b8",
-        "ICON": "#c4c9d8",
+        "WINDOW": "#0b0b0e",
+        "SURFACE": "#16161b",
+        "SURFACE_ALT": "#1c1c22",
+        "CANVAS": "#4d000000",          # dims the glowing backdrop a little behind the pages
+        "BORDER": "#26262e",
+        "BORDER_STRONG": "#363640",
+        "TEXT": "#ececf2",
+        "TEXT_MUTED": "#9b9bab",
+        "ICON": "#c8c8d4",
         "ICON_HOVER": "#ffffff",
-        "ICON_DISABLED": "#596077",
-        "ACCENT": "#9d8cff",
-        "ACCENT_HOVER": "#b0a3ff",
-        "ACCENT_PRESSED": "#8574f5",
-        "ACCENT_SOFT": "#37335a",
-        "ACCENT_SOFT_BORDER": "#5b52a3",
+        "ICON_DISABLED": "#4e4e5a",
+        "ACCENT": "#b4a7ff",             # soft lilac
+        "ACCENT_HOVER": "#c5bbff",
+        "ACCENT_PRESSED": "#9c8dff",
+        "ACCENT_SOFT": "#221e36",
+        "ACCENT_SOFT_BORDER": "#4b4383",
         "DANGER": "#f87171",
-        "PAGE_SHADOW": QColor(0, 0, 0, 170),
+        "PAGE_SHADOW": QColor(0, 0, 0, 190),
     },
 }
 
@@ -77,81 +77,87 @@ def _vgrad(top, bottom):
 
 # ---- surface recipes (style-sheet only: gradients and rgba())
 _SURFACES = {
-    LIGHT: {  # glass + clay: frosted, see-through panels that are also soft and puffy
-        "backdrop": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #c5d3ff, stop:0.45 #e6d9ff, stop:1 #c3ede2)",
-        # frosted panels, lighter at the top like a lit, rounded clay surface
-        "panel": _vgrad("rgba(255, 255, 255, 0.80)", "rgba(240, 237, 255, 0.58)"),
+    LIGHT: {  # white clay-glass: frosted white, puffy panels over a softly tinted white backdrop
+        "backdrop": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #e8ecff, stop:0.35 #f8f7ff, "
+                    "stop:0.7 #fbf4fb, stop:1 #e6f6f1)",
+        # frosted white panels, brightest at the top like a lit, rounded clay surface
+        "panel": _vgrad("rgba(255, 255, 255, 0.90)", "rgba(248, 247, 255, 0.72)"),
         "panel_top": "rgba(255, 255, 255, 1.0)",       # bright glass rim / clay highlight
-        "panel_bottom": "rgba(110, 100, 185, 0.30)",   # the clay's soft underside
-        # buttons are little clay pills; pressed and checked ones sink in
-        "raised": _vgrad("rgba(255, 255, 255, 0.96)", "rgba(232, 229, 252, 0.82)"),
-        "raised_hover": _vgrad("#ffffff", "rgba(241, 239, 255, 0.95)"),
-        "pressed": _vgrad("rgba(208, 204, 238, 0.90)", "rgba(246, 245, 255, 0.92)"),
-        "press_top": "rgba(100, 90, 175, 0.40)",
+        "panel_bottom": "rgba(130, 125, 190, 0.22)",   # the clay's soft lavender underside
+        # buttons are little white clay pills; pressed and checked ones sink in
+        "raised": _vgrad("#ffffff", "rgba(243, 242, 253, 0.92)"),
+        "raised_hover": _vgrad("#ffffff", "rgba(246, 245, 255, 0.98)"),
+        "pressed": _vgrad("rgba(226, 224, 245, 0.95)", "rgba(250, 250, 255, 0.95)"),
+        "press_top": "rgba(120, 115, 185, 0.32)",
         "press_bottom": "rgba(255, 255, 255, 1.0)",
-        "field": _vgrad("rgba(232, 231, 250, 0.88)", "rgba(255, 255, 255, 0.92)"),
-        "field_top": "rgba(100, 90, 175, 0.32)",
+        "field": _vgrad("rgba(240, 240, 250, 0.92)", "rgba(255, 255, 255, 0.96)"),
+        "field_top": "rgba(120, 115, 185, 0.24)",
         "field_bottom": "rgba(255, 255, 255, 1.0)",
-        "checked": _vgrad("rgba(203, 198, 250, 0.95)", "rgba(233, 231, 255, 0.95)"),
-        "checked_top": "rgba(79, 70, 229, 0.50)",
-        "checked_bottom": "rgba(255, 255, 255, 0.95)",
-        "popup": "rgba(250, 249, 255, 0.97)",
-        "popup_edge": "rgba(255, 255, 255, 1.0)",
-        "item_hover": _vgrad("rgba(220, 216, 252, 0.95)", "rgba(236, 234, 255, 0.95)"),
-        "tab": _vgrad("rgba(255, 255, 255, 0.95)", "rgba(236, 233, 255, 0.85)"),
+        "checked": _vgrad("rgba(222, 222, 253, 0.98)", "rgba(240, 240, 255, 0.98)"),
+        "checked_top": "rgba(99, 102, 241, 0.38)",
+        "checked_bottom": "rgba(255, 255, 255, 1.0)",
+        "popup": "rgba(255, 255, 255, 0.98)",
+        "popup_edge": "rgba(228, 228, 244, 1.0)",
+        "item_hover": _vgrad("rgba(234, 234, 254, 0.98)", "rgba(244, 244, 255, 0.98)"),
+        "tab": _vgrad("#ffffff", "rgba(246, 245, 255, 0.92)"),
         "pages": "transparent",                        # the backdrop shows through the frost
-        "code": "rgba(255, 255, 255, 0.90)",
-        "primary": _vgrad("#8d86f8", "#5a51ea"),
-        "primary_hover": _vgrad("#9a94fa", "#665eee"),
-        "primary_pressed": _vgrad("#4a41d6", "#6a62ef"),
-        "primary_top": "#bcb8fc",
-        "primary_bottom": "#3c34c4",
+        "code": "rgba(255, 255, 255, 0.94)",
+        "primary": _vgrad("#9194f8", "#6366f1"),
+        "primary_hover": _vgrad("#9ea1fa", "#6f72f3"),
+        "primary_pressed": _vgrad("#5557e3", "#7477f4"),
+        "primary_top": "#c7c9fd",
+        "primary_bottom": "#4f52dc",
         "primary_text": "#ffffff",
-        "scroll": "rgba(90, 80, 170, 0.30)",
-        "scroll_hover": "rgba(90, 80, 170, 0.48)",
-        "tooltip": "#2a2350",
+        "scroll": "rgba(110, 105, 175, 0.24)",
+        "scroll_hover": "rgba(110, 105, 175, 0.40)",
+        "tooltip": "#2b2d45",
         "tooltip_text": "#ffffff",
         "radius": 12,
         "bar_radius": 20,
         # real soft shadows under the floating bars (Qt style sheets can't do box-shadow)
-        "shadow": (90, 78, 175, 60),
-        "shadow_blur": 28,
+        "shadow": (110, 105, 185, 42),
+        "shadow_blur": 30,
         "shadow_offset": 7,
     },
-    DARK: {
-        "backdrop": "#1e2130",
-        "panel": _vgrad("#2f3447", "#262a3a"),
-        "panel_top": "#454c66",                        # light catching the top of the clay
-        "panel_bottom": "#12141c",                     # its shadow underneath
-        "raised": _vgrad("#353b51", "#2a2e40"),
-        "raised_hover": _vgrad("#3f465f", "#30354a"),
-        "pressed": _vgrad("#1b1e29", "#282c3d"),
-        "press_top": "#101219",
-        "press_bottom": "#3d4460",
-        "field": "#1a1d28",
-        "field_top": "#0f1118",
-        "field_bottom": "#3a4058",
-        "checked": _vgrad("#221f3d", "#302b55"),
-        "checked_top": "#15122a",
-        "checked_bottom": "#5b52a3",
-        "popup": "#2a2e3f",
-        "popup_edge": "#454c66",
-        "item_hover": "#37335a",
-        "tab": _vgrad("#30354a", "#2a2e3f"),
-        "pages": "#171a24",
-        "code": "#1a1d28",
-        "primary": _vgrad("#b6aaff", "#8574f5"),
-        "primary_hover": _vgrad("#c3b9ff", "#9282f7"),
-        "primary_pressed": _vgrad("#7a69ee", "#9d8cff"),
-        "primary_top": "#d6ceff",
-        "primary_bottom": "#5a4acf",
-        "primary_text": "#17132e",
-        "scroll": "#3a4058",
-        "scroll_hover": "#4b5270",
-        "tooltip": "#3a3f56",
+    DARK: {  # black premium clay: charcoal panels on soft black shadows, over a faint violet glow
+        "backdrop": "qradialgradient(cx:0.12, cy:0.0, radius:1.25, fx:0.12, fy:0.0, stop:0 #1c1830, "
+                    "stop:0.45 #0c0c10, stop:1 #060608)",
+        "panel": _vgrad("#1b1b21", "#121216"),
+        "panel_top": "#2d2d36",                        # a fine rim of light on the clay's top
+        "panel_bottom": "#030304",                     # its black underside
+        "raised": _vgrad("#222229", "#18181d"),
+        "raised_hover": _vgrad("#2a2a33", "#1d1d23"),
+        "pressed": _vgrad("#0c0c0f", "#17171c"),
+        "press_top": "#030304",
+        "press_bottom": "#2f2f39",
+        "field": _vgrad("#0d0d10", "#131317"),
+        "field_top": "#030304",
+        "field_bottom": "#2a2a33",
+        "checked": _vgrad("#1b1830", "#262143"),
+        "checked_top": "#0c0a18",
+        "checked_bottom": "#5a5096",
+        "popup": "#17171c",
+        "popup_edge": "#2d2d36",
+        "item_hover": _vgrad("#262143", "#1f1b36"),
+        "tab": _vgrad("#202027", "#16161b"),
+        "pages": "transparent",                        # the glow shows through, a little dimmed
+        "code": "#0e0e11",
+        "primary": _vgrad("#c7bdff", "#9c8dff"),
+        "primary_hover": _vgrad("#d3cbff", "#a99bff"),
+        "primary_pressed": _vgrad("#8d7ef5", "#b4a7ff"),
+        "primary_top": "#e2dcff",
+        "primary_bottom": "#6f5fe0",
+        "primary_text": "#120f24",
+        "scroll": "#2c2c35",
+        "scroll_hover": "#3d3d49",
+        "tooltip": "#24242c",
         "tooltip_text": "#ffffff",
         "radius": 12,
-        "bar_radius": 18,
+        "bar_radius": 20,
+        # soft black shadows: the clay floats above the backdrop
+        "shadow": (0, 0, 0, 170),
+        "shadow_blur": 32,
+        "shadow_offset": 8,
     },
 }
 
@@ -227,7 +233,7 @@ QToolButton[popupMode="2"] {{ padding-right: 18px; }}
 QToolButton::menu-indicator {{ image: url({down_small}); subcontrol-origin: padding;
     subcontrol-position: center right; right: 4px; width: 10px; height: 10px; }}
 QToolButton#ribbonToggle {{ margin: 2px 10px 0 4px; padding: 4px; }}
-QToolButton#swatch {{ border: 1px solid {BORDER_STRONG}; padding: 3px; }}
+QToolButton#swatch {{ border: 1px solid {ICON_DISABLED}; padding: 3px; }}
 QToolBar QLabel {{ color: {TEXT_MUTED}; padding: 0 2px 0 6px; }}
 
 /* ---- document tabs */

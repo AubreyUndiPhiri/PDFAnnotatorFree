@@ -77,10 +77,10 @@ def test_theme_switches_live(app):
     try:
         theme.set_mode(theme.DARK)
         dark_icon = icons.icon("save").pixmap(16).toImage()
-        assert theme.mode == theme.DARK and theme.WINDOW == "#1e2130"
+        assert theme.mode == theme.DARK and theme.WINDOW == "#0b0b0e" and "qradialgradient" in app.styleSheet()
         theme.set_mode(theme.LIGHT)
         light_icon = icons.icon("save").pixmap(16).toImage()
-        assert theme.WINDOW == "#eef1fb" and "qlineargradient" in app.styleSheet()
+        assert theme.WINDOW == "#f6f7fc" and "qlineargradient" in app.styleSheet()
         assert dark_icon != light_icon  # the same cached QIcon re-tints itself
     finally:
         theme.set_mode(start)

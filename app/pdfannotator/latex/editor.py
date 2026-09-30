@@ -342,7 +342,7 @@ class CodeEditor(QPlainTextEdit):
 
     def paint_gutter(self, event):
         painter = QPainter(self.gutter)
-        painter.fillRect(event.rect(), QColor(theme.SURFACE_ALT if theme.mode == theme.LIGHT else "#161923"))
+        painter.fillRect(event.rect(), QColor(theme.SURFACE_ALT if theme.mode == theme.LIGHT else "#101014"))
         block = self.firstVisibleBlock()
         number = block.blockNumber()
         top = round(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
