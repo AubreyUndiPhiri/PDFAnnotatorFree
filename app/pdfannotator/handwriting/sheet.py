@@ -1,5 +1,5 @@
 """The printable glyph sheet people fill in to make a handwriting font."""
-import fitz
+import pymupdf as fitz
 
 from . import layout as L
 

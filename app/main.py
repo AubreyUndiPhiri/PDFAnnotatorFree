@@ -21,6 +21,12 @@ def main():
     window = MainWindow()
     window.resize(1440, 900)
     window.show()
+    import os
+
+    # files passed on the command line (e.g. "Open with" in Explorer)
+    files = [path for path in sys.argv[1:] if os.path.isfile(path)]
+    if files:
+        window.open_files_as_tabs(files)
     sys.exit(app.exec())
 
 

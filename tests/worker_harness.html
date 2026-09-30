@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Aupedean Sign worker test</title></head>
+<body>
+<pre id="out">running</pre>
+<script src="sql-wasm.js"></script>
+<script type="module">
+// Runs the real Cloudflare Worker (worker.js) in the browser: D1 is played by
+// SQLite (sql.js), Brevo by a stub that keeps the emails. test_sign_worker.py
+// reads the checks printed into #out.
+import worker from './worker.js';
+
+const log = [];
+const check = (name, cond, extra) => log.push({name, ok: !!cond, extra: extra === undefined ? null : extra});
+try {
+  const SQL = await initSqlJs({locateFile: (f) => f});
+  const db = new SQL.Database();
+  db.exec(await (await fetch('schema.sql')).text());
+  class Stmt {
+    constructor(sql) { this.sql = sql; this.args = []; }
+    bind(...args) { this.args = args; return this; }
+    async all() {
+      const st = db.prepare(this.sql); st.bind(this.args); const rows = [];
+      while (st.step()) rows.push(st.getAsObject()); st.free(); return {results: rows, success: true};
+    }
+    async first() { return (await this.all()).results[0] || null; }
+    async run() { db.run(this.sql, this.args); return {success: true, meta: {changes: db.getRowsModified()}}; }
+  }
+  const DB = {prepare: (sql) => new Stmt(sql), batch: async (list) => { const out = []; for (const s of list) out.push(await s.run()); return out; }};
+  const mails = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).startsWith('https://api.brevo.com/')) {
+      if (opts.headers['api-key'] !== 'brevo-key') return new Response('{"message":"bad key"}', {status: 401});
+      mails.push(JSON.parse(opts.body)); return new Response('{"messageId":"m1"}', {status: 201});
+    }
+    return realFetch(url, opts);
+  };
+  const env = {DB, BREVO_KEY: 'brevo-key', SENDER: 'sign@owner.example', SENDER_NAME: 'Aupedean Sign',
+               OWNER: 'owner@owner.example', ALLOW: '@team.example, friend@gmail.com'};
+  const pending = [];
+  const ctx = {waitUntil: (p) => pending.push(p)};
+  async function call(method, path, {json, text, token, ip} = {}) {
+    const headers = new Headers();
+    let body;
+    if (json !== undefined) { headers.set('content-type', 'application/json'); body = JSON.stringify(json); }
+    if (text !== undefined) { headers.set('content-type', 'text/plain'); body = text; }
+    if (token) headers.set('authorization', 'Bearer ' + token);
+    if (ip) headers.set('cf-connecting-ip', ip);
+    const resp = await worker.fetch(new Request('https://sign.example' + path, {method, headers, body}), env, ctx);
+    const ct = resp.headers.get('content-type') || '';
+    return {status: resp.status, body: ct.includes('json') ? await resp.json() : await resp.text()};
+  }
+  const lastCode = (to) => { const m = [...mails].reverse().find((x) => x.to[0].email === to);
+                             return m && (m.htmlContent.match(/\b(\d{6})\b/) || [])[1]; };
+
+  // ---- health, page, pdf-lib
+  let r = await call('GET', '/api/health');
+  check('health', r.status === 200 && r.body.service === 'aupedean-sign', r.body);
+  r = await call('GET', '/s/abcdefghijklmnop1234');
+  check('signing page served', r.status === 200 && r.body.includes('Only the person this was sent to'));
+  r = await call('GET', '/pdf-lib.js');
+  check('pdf-lib served', r.status === 200 && r.body.length > 400000);
+
+  // ---- signing in
+  r = await call('POST', '/api/login/code', {json: {email: 'stranger@evil.example'}});
+  check('strangers may not use it', r.status === 403 && r.body.error === 'not-allowed', r.body);
+  r = await call('POST', '/api/login/code', {json: {email: 'Owner@Owner.example'}});
+  check('owner gets a code', r.status === 200 && /^\d{6}$/.test(lastCode('owner@owner.example') || ''), r.body);
+  r = await call('POST', '/api/login/code', {json: {email: 'owner@owner.example'}});
+  check('codes are throttled', r.status === 429 && r.body.error === 'wait', r.body);
+  r = await call('POST', '/api/login/verify', {json: {email: 'owner@owner.example', code: '000000'}});
+  check('wrong code refused', r.status === 400 && r.body.error === 'wrong-code', r.body);
+  r = await call('POST', '/api/login/verify', {json: {email: 'owner@owner.example', code: lastCode('owner@owner.example')}});
+  const owner = r.body.token;
+  check('right code signs in', r.status === 200 && owner && r.body.email === 'owner@owner.example', r.body);
+  r = await call('POST', '/api/login/verify', {json: {email: 'owner@owner.example', code: lastCode('owner@owner.example')}});
+  check('a code works once', r.status === 400, r.body);
+  r = await call('GET', '/api/me', {token: owner});
+  check('session works', r.status === 200 && r.body.email === 'owner@owner.example', r.body);
+  r = await call('GET', '/api/me', {token: 'forged'});
+  check('forged session refused', r.status === 401, r.body);
+
+  // ---- a request
+  r = await call('POST', '/api/requests', {token: owner, json: {signer_email: 'Sam@Gmail.com', signer_name: 'Sam',
+        title: 'Tenancy <agreement>', message: 'Please sign', owner_name: 'Aubrey', parts: 2, expires_days: 7}});
+  const id = r.body.id;
+  check('request created', r.status === 200 && /^[A-Za-z0-9]{24}$/.test(id || ''), r.body);
+  await call('PUT', `/api/requests/${id}/doc?part=0`, {token: owner, text: 'AAAA'});
+  const key = 'k'.repeat(43);
+  r = await call('POST', `/api/requests/${id}/send`, {token: owner, json: {key}});
+  check('send waits for the whole upload', r.status === 409 && r.body.error === 'upload-incomplete', r.body);
+  await call('PUT', `/api/requests/${id}/doc?part=1`, {token: owner, text: 'BBBB'});
+  r = await call('POST', `/api/requests/${id}/send`, {token: owner, json: {key}});
+  const invite = mails[mails.length - 1];
+  check('signer is emailed the link with the key', r.status === 200 && invite.to[0].email === 'sam@gmail.com'
+        && invite.htmlContent.includes(`/s/${id}#k=${key}`), r.body);
+  check('email text is escaped', invite.htmlContent.includes('Tenancy &lt;agreement&gt;') && !invite.htmlContent.includes('<agreement>'));
+  const rows = db.exec("SELECT COUNT(*) FROM requests WHERE message LIKE '%kkkk%'")[0].values[0][0];
+  check('the key is not stored', rows === 0);
+
+  // ---- the signer
+  r = await call('GET', `/api/s/${id}/info`);
+  check('signer sees who it is for, masked', r.status === 200 && r.body.request.signer_email === 'sa*@gmail.com'
+        && r.body.request.status === 'waiting', r.body);
+  r = await call('GET', `/api/s/${id}/doc?part=0`);
+  check('no document without the email code', r.status === 401, r.body);
+  r = await call('POST', `/api/s/${id}/code`);
+  check('code goes to the signer only', r.status === 200 && /^\d{6}$/.test(lastCode('sam@gmail.com') || ''), r.body);
+  r = await call('POST', `/api/s/${id}/verify`, {json: {code: '111111'}});
+  check('signer wrong code refused', r.status === 400, r.body);
+  r = await call('POST', `/api/s/${id}/verify`, {json: {code: lastCode('sam@gmail.com')}});
+  const signer = r.body.token;
+  check('signer verified', r.status === 200 && signer && r.body.parts === 2, r.body);
+  const doc = (await call('GET', `/api/s/${id}/doc?part=0`, {token: signer})).body + (await call('GET', `/api/s/${id}/doc?part=1`, {token: signer})).body;
+  check('signer gets the (encrypted) document', doc === 'AAAABBBB', doc);
+  r = await call('POST', `/api/s/${id}/sign`, {token: signer, text: 'not base64!'});
+  check('bad signature data refused', r.status === 400, r.body);
+  r = await call('POST', `/api/s/${id}/sign`, {token: signer, text: 'U0lHTkVE', ip: '203.0.113.9'});
+  await Promise.all(pending);
+  check('signed', r.status === 200 && r.body.signed_at, r.body);
+  check('owner told by email', mails.some((m) => m.to[0].email === 'owner@owner.example' && m.subject.startsWith('Signed:')));
+  r = await call('POST', `/api/s/${id}/sign`, {token: signer, text: 'U0lHTkVE'});
+  check('can only sign once', r.status === 409 || r.status === 401, r.body);
+
+  // ---- other people can't see it; the owner collects it
+  r = await call('POST', '/api/login/code', {json: {email: 'member@team.example'}});
+  r = await call('POST', '/api/login/verify', {json: {email: 'member@team.example', code: lastCode('member@team.example')}});
+  const member = r.body.token;
+  check('allowed domain can sign in', r.status === 200 && member, r.body);
+  r = await call('GET', `/api/requests/${id}/result`, {token: member});
+  check("others can't read your requests", r.status === 404, r.body);
+  r = await call('GET', '/api/requests?status=signed', {token: owner});
+  const listed = (r.body.requests || []).find((x) => x.id === id);
+  check('owner sees it signed, with the audit', listed && listed.signed_ip === '203.0.113.9' && listed.signer_email === 'sam@gmail.com', listed);
+  r = await call('GET', `/api/requests/${id}/result`, {token: owner});
+  check('owner collects the signature', r.status === 200 && r.body === 'U0lHTkVE', r.body);
+  r = await call('POST', `/api/requests/${id}/done`, {token: owner, json: {}});
+  const left = db.exec(`SELECT COUNT(*) FROM blobs WHERE request_id = '${id}'`)[0].values[0][0];
+  check('then everything is deleted', r.status === 200 && left === 0, left);
+  r = await call('GET', `/api/s/${id}/info`);
+  check('the link now says signed', r.body.request && r.body.request.status === 'completed', r.body);
+
+  // ---- a quick request: the emailed link alone opens it
+  r = await call('POST', `/api/s/${id}/open`);
+  check('a normal request needs the code', r.status === 403 || r.status === 409, r.body);
+  r = await call('POST', '/api/requests', {token: owner, json: {signer_email: 'client@gmail.com', title: 'Quick', parts: 1, quick: true}});
+  const idq = r.body.id;
+  await call('PUT', `/api/requests/${idq}/doc?part=0`, {token: owner, text: 'QQQQ'});
+  r = await call('POST', `/api/requests/${idq}/send`, {token: owner, json: {key}});
+  const quickInvite = mails[mails.length - 1];
+  check('quick invite needs no code', r.status === 200 && quickInvite.htmlContent.includes('no account or app needed'), r.body);
+  r = await call('GET', `/api/s/${idq}/info`);
+  check('the page knows it is quick', r.body.request && r.body.request.quick === true, r.body);
+  r = await call('POST', `/api/s/${idq}/open`);
+  const quickSigner = r.body.token;
+  check('quick opens without a code', r.status === 200 && quickSigner && r.body.parts === 1, r.body);
+  r = await call('POST', `/api/s/${idq}/sign`, {token: quickSigner, text: 'UVVJQ0s='});
+  await Promise.all(pending);
+  check('quick signed, owner told', r.status === 200 && mails.some((m) => m.subject === 'Signed: Quick'), r.body);
+  r = await call('GET', '/api/requests?status=signed', {token: owner});
+  check('owner sees it was quick', (r.body.requests || []).some((x) => x.id === idq && x.quick === true), r.body);
+
+  // ---- the daily email cap
+  env.EMAILS_PER_DAY = String(mails.length);   // counting starts now: one more is allowed... then none
+  r = await call('POST', '/api/login/code', {json: {email: 'friend@gmail.com'}});
+  check('emails under the cap go', r.status === 200, r.body);
+  env.EMAILS_PER_DAY = '1';
+  r = await call('POST', '/api/login/code', {json: {email: 'other@team.example'}});
+  check('the cap stops emails', r.status === 503 && r.body.error === 'busy', r.body);
+  delete env.EMAILS_PER_DAY;
+
+  // ---- cancelled and expired links
+  r = await call('POST', '/api/requests', {token: owner, json: {signer_email: 'x@gmail.com', title: 'Two', parts: 1}});
+  const id2 = r.body.id;
+  await call('PUT', `/api/requests/${id2}/doc?part=0`, {token: owner, text: 'CCCC'});
+  await call('POST', `/api/requests/${id2}/send`, {token: owner, json: {key}});
+  await call('POST', `/api/requests/${id2}/cancel`, {token: owner, json: {}});
+  r = await call('POST', `/api/s/${id2}/code`);
+  check('cancelled links stop working', r.status === 410 && r.body.error === 'cancelled', r.body);
+  r = await call('POST', '/api/requests', {token: owner, json: {signer_email: 'y@gmail.com', title: 'Three', parts: 1}});
+  const id3 = r.body.id;
+  await call('PUT', `/api/requests/${id3}/doc?part=0`, {token: owner, text: 'DDDD'});
+  await call('POST', `/api/requests/${id3}/send`, {token: owner, json: {key}});
+  db.run('UPDATE requests SET expires = 1 WHERE id = ?', [id3]);
+  r = await call('POST', `/api/s/${id3}/code`);
+  check('expired links stop working', r.status === 410 && r.body.error === 'expired', r.body);
+} catch (err) {
+  check('no crash', false, String(err && err.stack || err));
+}
+document.getElementById('out').textContent = 'RESULT ' + JSON.stringify(log);
+</script>
+</body>
+</html>

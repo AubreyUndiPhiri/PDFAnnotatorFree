@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign: {{TITLE}}</title>
+<!-- Made with Aupedean Annotator. Everything happens in this browser: the
+     document never leaves this device until you send the signed copy back. -->
+<style>
+  :root { --ink:#1b2236; --muted:#5d6781; --accent:#4f46e5; --line:#dfe4f0; --bad:#dc2626; --ok:#15803d; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--ink);
+         background: linear-gradient(135deg, #c5d3ff, #e6d9ff 45%, #c3ede2); min-height: 100vh; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 16px 12px 120px; }
+  .card { background: rgba(255,255,255,.9); border: 1px solid #fff; border-radius: 18px; padding: 16px 18px;
+          box-shadow: 0 8px 28px rgba(90,78,175,.18); margin-bottom: 14px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .muted { color: var(--muted); font-size: 14px; }
+  .msg { white-space: pre-wrap; margin-top: 8px; font-size: 15px; }
+  .pages { display: flex; flex-direction: column; gap: 14px; }
+  .page { position: relative; width: 100%; background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.15); }
+  .page img.bg { display: block; width: 100%; height: auto; }
+  .field { position: absolute; border: 2px dashed var(--accent); background: rgba(79,70,229,.12); border-radius: 4px;
+           display: flex; align-items: center; justify-content: center; color: var(--accent); font-weight: 700;
+           font-size: 14px; cursor: pointer; animation: pulse 1.6s ease-in-out infinite; }
+  .field.done { border-style: solid; background: rgba(255,255,255,.2); animation: none; }
+  .field img { max-width: 100%; max-height: 100%; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 6px rgba(79,70,229,.18); } }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,.96); border-top: 1px solid var(--line);
+         padding: 12px 16px; display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap;
+         box-shadow: 0 -6px 20px rgba(90,78,175,.12); }
+  button { font: inherit; font-size: 15px; padding: 11px 20px; border-radius: 999px; border: 1px solid #c5cde0;
+           background: #fff; cursor: pointer; }
+  button.primary { background: linear-gradient(#8d86f8, #5a51ea); color: #fff; border-color: #3c34c4; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  .modal { position: fixed; inset: 0; background: rgba(27,34,54,.45); display: none; align-items: center;
+           justify-content: center; padding: 12px; z-index: 5; }
+  .modal.open { display: flex; }
+  .sheet { background: #fff; border-radius: 18px; width: 100%; max-width: 560px; padding: 18px; max-height: 96vh; overflow: auto; }
+  label { display: block; font-size: 14px; font-weight: 600; margin: 12px 0 6px; }
+  input[type=text], input[type=email] { width: 100%; padding: 10px 12px; font-size: 16px; border: 1px solid #c5cde0; border-radius: 10px; }
+  .tabs { display: flex; gap: 8px; margin-top: 12px; }
+  .tabs button { padding: 7px 14px; font-size: 14px; }
+  .tabs button.on { background: #ecebff; border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  canvas.pad { width: 100%; height: 170px; border: 1px solid #c5cde0; border-radius: 12px; background: #fff;
+               touch-action: none; display: block; margin-top: 8px; }
+  .check { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; margin-top: 12px; }
+  .row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; flex-wrap: wrap; }
+  .error { color: var(--bad); font-weight: 600; font-size: 14px; }
+  .done { color: var(--ok); font-weight: 700; font-size: 18px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1 id="title"></h1>
+    <div class="muted" id="from"></div>
+    <div class="msg" id="message"></div>
+  </div>
+  <div class="card hidden" id="doneCard">
+    <div class="done">Signed. Now send it back</div>
+    <p class="muted" id="doneText"></p>
+    <div class="row" style="justify-content:flex-start">
+      <button class="primary" id="shareBtn">Send back (WhatsApp, email...)</button>
+      <button id="downloadBtn">Download the signed PDF</button>
+      <button id="emailBtn">Email it back</button>
+    </div>
+  </div>
+  <div class="pages" id="pages"></div>
+</div>
+
+<div class="bar" id="bar">
+  <span class="muted" id="barText">Tap the <b>Sign here</b> box on the document.</span>
+  <button class="primary" id="finishBtn" disabled>Finish and send back</button>
+</div>
+
+<div class="modal" id="modal">
+  <div class="sheet">
+    <h1>Your signature</h1>
+    <label for="name">Full name</label>
+    <input type="text" id="name" autocomplete="name" maxlength="120">
+    <label for="email">Your email (so the sender knows it's you)</label>
+    <input type="email" id="email" autocomplete="email" maxlength="160">
+    <div class="tabs"><button type="button" id="tabDraw" class="on">Draw</button>
+      <button type="button" id="tabType">Type</button></div>
+    <canvas class="pad" id="pad"></canvas>
+    <div class="row" style="justify-content:flex-start;margin-top:6px"><button type="button" id="clearBtn">Clear</button></div>
+    <div class="check"><input type="checkbox" id="agree">
+      <label for="agree" style="margin:0;font-weight:400">I agree that this is my signature and that I am signing this document electronically.</label></div>
+    <div class="error" id="padError"></div>
+    <div class="row"><button type="button" id="cancelBtn">Cancel</button>
+      <button type="button" class="primary" id="adoptBtn">Sign</button></div>
+  </div>
+</div>
+
+<script id="data" type="application/json">{{DATA}}</script>
+<script>/*{{PDFLIB}}*/</script>
+<script>
+(function () {
+  var D = JSON.parse(document.getElementById('data').textContent);
+  function $(id) { return document.getElementById(id); }
+  var state = { png: null, method: null, name: '', email: '' , signed: null, fileName: '' };
+
+  // ---- the document
+  $('title').textContent = 'Please sign: ' + D.title;
+  $('from').textContent = (D.requester_name || D.requester_email)
+      ? 'From ' + [D.requester_name, D.requester_email ? '<' + D.requester_email + '>' : ''].join(' ').trim() : '';
+  $('message').textContent = D.message || '';
+  var fieldBox = null;
+  D.pages.forEach(function (pg, i) {
+    var div = document.createElement('div'); div.className = 'page';
+    var img = document.createElement('img'); img.className = 'bg'; img.alt = 'Page ' + (i + 1);
+    img.src = 'data:image/jpeg;base64,' + pg.img; div.appendChild(img);
+    if (i === D.field.page) {
+      var box = document.createElement('div'); box.className = 'field'; box.textContent = 'Sign here';
+      box.style.left = (D.field.x * 100) + '%'; box.style.top = (D.field.y * 100) + '%';
+      box.style.width = (D.field.w * 100) + '%'; box.style.height = (D.field.h * 100) + '%';
+      box.onclick = openPad; div.appendChild(box); fieldBox = box;
+    }
+    $('pages').appendChild(div);
+  });
+  setTimeout(function () { if (fieldBox) fieldBox.scrollIntoView({block: 'center', behavior: 'smooth'}); }, 400);
+
+  // ---- signature pad (draw or type)
+  var pad = $('pad'), ctx = pad.getContext('2d'), drawn = false, last = null, lastMid = null, mode = 'draw';
+  function sizePad() {
+    var r = pad.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    pad.width = Math.max(1, Math.round(r.width * dpr)); pad.height = Math.max(1, Math.round(r.height * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111827';
+    drawn = false; if (mode === 'type') typeSignature();
+  }
+  function pt(e) { var r = pad.getBoundingClientRect(); return {x: e.clientX - r.left, y: e.clientY - r.top, p: e.pressure || 0.5}; }
+  pad.addEventListener('pointerdown', function (e) { if (mode !== 'draw') return; pad.setPointerCapture(e.pointerId); last = pt(e); lastMid = last; });
+  pad.addEventListener('pointermove', function (e) {
+    if (!last || mode !== 'draw') return;
+    var p = pt(e), mid = {x: (last.x + p.x) / 2, y: (last.y + p.y) / 2};
+    ctx.lineWidth = 1.6 + 2.2 * (e.pointerType === 'pen' ? p.p : 0.6);
+    ctx.beginPath(); ctx.moveTo(lastMid.x, lastMid.y); ctx.quadraticCurveTo(last.x, last.y, mid.x, mid.y); ctx.stroke();
+    last = p; lastMid = mid; drawn = true;
+  });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (t) { pad.addEventListener(t, function () { last = null; }); });
+  function clearPad() { ctx.clearRect(0, 0, pad.width, pad.height); drawn = false; }
+  function typeSignature() {
+    clearPad(); var name = $('name').value.trim(); if (!name) return;
+    var r = pad.getBoundingClientRect(), size = Math.min(56, r.width / Math.max(4, name.length * 0.55));
+    ctx.fillStyle = '#111827'; ctx.textBaseline = 'middle';
+    ctx.font = 'italic ' + size + 'px "Segoe Script", "Brush Script MT", "Lucida Handwriting", cursive';
+    ctx.fillText(name, 16, r.height / 2); drawn = true;
+  }
+  function setMode(m) {
+    mode = m; $('tabDraw').classList.toggle('on', m === 'draw'); $('tabType').classList.toggle('on', m === 'type');
+    if (m === 'type') typeSignature(); else clearPad();
+  }
+  $('tabDraw').onclick = function () { setMode('draw'); };
+  $('tabType').onclick = function () { setMode('type'); };
+  $('name').addEventListener('input', function () { if (mode === 'type') typeSignature(); });
+  $('clearBtn').onclick = function () { if (mode === 'type') { $('name').value = ''; } clearPad(); };
+  $('cancelBtn').onclick = function () { $('modal').classList.remove('open'); };
+  window.addEventListener('resize', function () { if ($('modal').classList.contains('open')) sizePad(); });
+
+  function openPad() {
+    if (state.signed) return;
+    $('modal').classList.add('open');
+    if (!$('name').value) $('name').value = D.signer_name || '';
+    if (!$('email').value) $('email').value = D.signer_email || '';
+    $('padError').textContent = ''; sizePad();
+  }
+  function trimmed() {
+    var w = pad.width, h = pad.height, px = ctx.getImageData(0, 0, w, h).data, x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) if (px[(y * w + x) * 4 + 3] > 10) {
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    if (x1 < 0) return null;
+    var m = 6; x0 = Math.max(0, x0 - m); y0 = Math.max(0, y0 - m); x1 = Math.min(w - 1, x1 + m); y1 = Math.min(h - 1, y1 + m);
+    var out = document.createElement('canvas'); out.width = x1 - x0 + 1; out.height = y1 - y0 + 1;
+    out.getContext('2d').drawImage(pad, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
+    return out.toDataURL('image/png');
+  }
+  $('adoptBtn').onclick = function () {
+    var name = $('name').value.trim(), email = $('email').value.trim();
+    if (!name) { $('padError').textContent = 'Please type your full name.'; return; }
+    if (mode === 'type') typeSignature();
+    var png = drawn ? trimmed() : null;
+    if (!png) { $('padError').textContent = mode === 'draw' ? 'Please draw your signature in the box.' : 'Please type your name.'; return; }
+    if (!$('agree').checked) { $('padError').textContent = 'Please tick the box to agree.'; return; }
+    state.png = png; state.method = mode; state.name = name; state.email = email;
+    fieldBox.innerHTML = ''; var im = document.createElement('img'); im.src = png; fieldBox.appendChild(im);
+    fieldBox.classList.add('done'); $('modal').classList.remove('open');
+    $('finishBtn').disabled = false; $('barText').innerHTML = 'Signed as <b></b>. Tap the box to change it.';
+    $('barText').querySelector('b').textContent = name;
+  };
+
+  // ---- the signed PDF: the signature drawn into the real document, plus a receipt for Aupedean
+  function b64ToBytes(b64) { var s = atob(b64), a = new Uint8Array(s.length); for (var i = 0; i < s.length; i++) a[i] = s.charCodeAt(i); return a; }
+  function bytesToB64(bytes) { var s = ''; for (var i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); }
+  function safeName(t) { return t.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'document'; }
+
+  async function buildSignedPdf() {
+    var L = window.PDFLib, pdf = await L.PDFDocument.load(b64ToBytes(D.pdf));
+    var sig = await pdf.embedPng(b64ToBytes(state.png.split(',')[1]));
+    var page = pdf.getPage(D.field.page), r = D.pdf_rect;             // [x0, y0, x1, y1] in PDF user space
+    var bw = r[2] - r[0], bh = r[3] - r[1], s = Math.min(bw / sig.width, bh / sig.height);
+    var w = sig.width * s, h = sig.height * s;
+    page.drawImage(sig, {x: r[0] + (bw - w) / 2, y: r[1] + (bh - h) / 2, width: w, height: h});
+    var when = new Date(), font = await pdf.embedFont(L.StandardFonts.Helvetica);
+    var line = 'Signed by ' + state.name + (state.email ? ' (' + state.email + ')' : '') + ', ' +
+               when.toISOString().slice(0, 16).replace('T', ' ') + ' UTC, with an Aupedean signing file';
+    page.drawText(line, {x: r[0], y: r[1] - 7, size: 5.5, font: font, color: L.rgb(0.35, 0.38, 0.45)});
+    var receipt = {format: 'aupedean-signature/1', request_id: D.id, token: D.token, name: state.name,
+                   email: state.email, signed_at: when.toISOString(), method: state.method,
+                   signature_png: state.png.split(',')[1], user_agent: navigator.userAgent};
+    await pdf.attach(new TextEncoder().encode(JSON.stringify(receipt)), 'aupedean-signature.json',
+                     {mimeType: 'application/json', description: 'Aupedean Annotator signature receipt',
+                      creationDate: when, modificationDate: when});
+    pdf.setModificationDate(when);
+    return await pdf.save();
+  }
+
+  function download() {
+    var url = URL.createObjectURL(new Blob([state.signed], {type: 'application/pdf'}));
+    var a = document.createElement('a'); a.href = url; a.download = state.fileName; document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 2000);
+  }
+  async function share() {
+    var file = new File([state.signed], state.fileName, {type: 'application/pdf'});
+    if (navigator.canShare && navigator.canShare({files: [file]})) {
+      try { await navigator.share({files: [file], title: 'Signed: ' + D.title, text: 'Here is the signed document.'}); return; }
+      catch (e) { if (e && e.name === 'AbortError') return; }
+    }
+    download();
+  }
+  $('shareBtn').onclick = share;
+  $('downloadBtn').onclick = download;
+  $('emailBtn').onclick = function () {
+    download();
+    location.href = 'mailto:' + encodeURIComponent(D.requester_email || '') + '?subject=' +
+        encodeURIComponent('Signed: ' + D.title) + '&body=' +
+        encodeURIComponent('Hello,\n\nI have signed "' + D.title + '". The signed PDF (' + state.fileName +
+                           ') is attached.\n\n' + state.name);
+  };
+
+  async function finish(silent) {
+    $('finishBtn').disabled = true; $('barText').textContent = 'Making the signed PDF...';
+    try { state.signed = await buildSignedPdf(); }
+    catch (e) { $('barText').textContent = 'Something went wrong: ' + e; $('finishBtn').disabled = false; return; }
+    state.fileName = safeName(D.title) + ' - signed by ' + safeName(state.name) + '.pdf';
+    $('bar').classList.add('hidden'); $('doneCard').classList.remove('hidden');
+    $('doneText').textContent = 'Send the signed PDF back to ' + (D.requester_name || D.requester_email || 'the sender') +
+        '. They open it in Aupedean Annotator and your signature is added to their copy.';
+    $('emailBtn').classList.toggle('hidden', !D.requester_email);
+    window.scrollTo({top: 0, behavior: 'smooth'});
+    if (!silent) share();
+  }
+  $('finishBtn').onclick = function () { finish(false); };
+
+  // ---- self-test (used by Aupedean's tests in a headless browser): sign and print the PDF
+  if (location.hash === '#selftest') {
+    openPad(); $('name').value = 'Test Signer'; $('email').value = 'test@example.com'; setMode('type');
+    $('agree').checked = true; $('adoptBtn').onclick();
+    finish(true).then(function () {
+      var out = document.createElement('pre'); out.id = 'selftest'; out.textContent = bytesToB64(state.signed);
+      document.body.appendChild(out);
+    });
+  }
+})();
+</script>
+</body>
+</html>

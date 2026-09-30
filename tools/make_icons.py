@@ -96,6 +96,34 @@ ICONS = {
     "exit": '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/>',
     "check": '<path d="M20 6L9 17l-5-5"/>',
     "select-all": '<path d="M5 3a2 2 0 0 0-2 2"/><path d="M19 3a2 2 0 0 1 2 2"/><path d="M21 19a2 2 0 0 1-2 2"/><path d="M5 21a2 2 0 0 1-2-2"/><path d="M9 3h1"/><path d="M9 21h1"/><path d="M14 3h1"/><path d="M14 21h1"/><path d="M3 9v1"/><path d="M21 9v1"/><path d="M3 14v1"/><path d="M21 14v1"/>',
+    # Word / LaTeX editors, conversions and the theme switch
+    "file-word": '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M8 12l1.5 6 2.5-4.5 2.5 4.5 1.5-6"/>',
+    "file-latex": '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M15 12H9l3 3-3 3h6"/>',
+    "moon": '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+    "align-justify": '<path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/>',
+    "list-bullet": '<path d="M9 6h12"/><path d="M9 12h12"/><path d="M9 18h12"/><path d="M4 6h.01"/><path d="M4 12h.01"/><path d="M4 18h.01"/>',
+    "list-ordered": '<path d="M10 6h11"/><path d="M10 12h11"/><path d="M10 18h11"/><path d="M4 6h1v4"/><path d="M4 10h2"/><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/>',
+    "indent": '<path d="m3 8 4 4-4 4"/><path d="M21 12H11"/><path d="M21 6H11"/><path d="M21 18H11"/>',
+    "outdent": '<path d="m7 8-4 4 4 4"/><path d="M21 12H11"/><path d="M21 6H11"/><path d="M21 18H11"/>',
+    "table": '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M12 3v18"/>',
+    "link": '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+    "page-break": '<path d="M5 3v5h14V3"/><path d="M5 21v-5h14v5"/><path d="M3 12h3"/><path d="M10.5 12h3"/><path d="M18 12h3"/>',
+    "text-color": '<path d="M4 21h16"/><path d="m6 17 6-13 6 13"/><path d="M8.5 12h7"/>',
+    "clear-format": '<path d="M4 7V4h16v3"/><path d="M5 20h6"/><path d="M13 4 8 20"/><path d="m15 15 5 5"/><path d="m20 15-5 5"/>',
+    "play": '<path d="M7 4v16l13-8z"/>',
+    "stop": '<rect x="5" y="5" width="14" height="14" rx="2"/>',
+    "external": '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+    "braces": '<path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/>',
+    "folder": '<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/>',
+    "file-pdf": '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 13h1.5a1.5 1.5 0 0 1 0 3H9v-3zm0 3v2"/><path d="M14 13v5"/><path d="M14 13h2"/><path d="M14 15.5h1.5"/>',
+    "sigma": '<path d="M18 7V4H6l6 8-6 8h12v-3"/>',
+    "superscript": '<path d="m4 19 8-8"/><path d="m12 19-8-8"/><path d="M20 12h-4c0-1.5.44-2 1.5-2.5S20 8.33 20 7.2c0-.72-.4-1.2-1.33-1.2C17.8 6 17 6.5 17 7"/>',
+    "subscript": '<path d="m4 5 8 8"/><path d="m12 5-8 8"/><path d="M20 19h-4c0-1.5.44-2 1.5-2.5S20 15.33 20 14.2c0-.72-.4-1.2-1.33-1.2C17.8 13 17 13.5 17 14"/>',
+    "smooth-stroke": '<path d="M3 17c3-7 5.5-9 8-5s4.5 5 7 1 2.5-5 3-6"/>',
+    "pressure": '<path d="M3 19c3.5-.3 6-3 8.5-7S16.5 5 21 5" stroke-width="1.2"/><path d="M4.5 18.6c3-.8 5.3-3.4 7.4-6.9 2.3-3.9 4.7-6 8.6-6.4-3.4 1.4-5.2 3.8-7.1 7.2-2.2 3.8-4.9 6-8.9 6.1z" fill="currentColor" stroke="none"/>',
+
+    "send": '<path d="M14.5 21.7a.5.5 0 0 0 .9 0L22 3.2a.5.5 0 0 0-.6-.6L2.9 9.1a.5.5 0 0 0 0 .9l7.7 3.1a2 2 0 0 1 1.1 1.1z"/><path d="m21.9 2.1-10.9 10.9"/>',
+
 }
 
 

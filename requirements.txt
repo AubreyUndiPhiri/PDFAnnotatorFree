@@ -4,3 +4,10 @@ PyMuPDF>=1.24
 numpy>=1.26
 fonttools>=4.50
 pyinstaller>=6.0
+# Convert to Word
+pdf2docx>=0.5.8
+python-docx>=1.1
+# Formula tool: renders LaTeX maths when no TeX installation is present
+matplotlib>=3.8
+# Signature service: documents are encrypted (AES-GCM) before upload
+cryptography>=42

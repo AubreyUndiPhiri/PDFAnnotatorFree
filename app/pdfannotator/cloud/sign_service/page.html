@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Sign a document</title>
+<style>
+  :root { --ink:#1b2236; --muted:#5d6781; --accent:#4f46e5; --line:#dfe4f0; --bad:#dc2626; --ok:#15803d; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--ink);
+         background: linear-gradient(135deg, #c5d3ff, #e6d9ff 45%, #c3ede2); min-height: 100vh; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 16px 12px 120px; }
+  .card { background: rgba(255,255,255,.92); border: 1px solid #fff; border-radius: 18px; padding: 16px 18px;
+          box-shadow: 0 8px 28px rgba(90,78,175,.18); margin-bottom: 14px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .muted { color: var(--muted); font-size: 14px; }
+  .msg { white-space: pre-wrap; margin-top: 8px; font-size: 15px; }
+  .pages { display: flex; flex-direction: column; gap: 14px; }
+  .page { position: relative; width: 100%; background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.15); }
+  .page img.bg { display: block; width: 100%; height: auto; }
+  .field { position: absolute; border: 2px dashed var(--accent); background: rgba(79,70,229,.12); border-radius: 4px;
+           display: flex; align-items: center; justify-content: center; color: var(--accent); font-weight: 700;
+           font-size: 14px; cursor: pointer; animation: pulse 1.6s ease-in-out infinite; }
+  .field.done { border-style: solid; background: rgba(255,255,255,.2); animation: none; }
+  .field img { max-width: 100%; max-height: 100%; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 6px rgba(79,70,229,.18); } }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,.96); border-top: 1px solid var(--line);
+         padding: 12px 16px; display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap;
+         box-shadow: 0 -6px 20px rgba(90,78,175,.12); }
+  button { font: inherit; font-size: 15px; padding: 11px 20px; border-radius: 999px; border: 1px solid #c5cde0;
+           background: #fff; cursor: pointer; }
+  button.primary { background: linear-gradient(#8d86f8, #5a51ea); color: #fff; border-color: #3c34c4; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  .modal { position: fixed; inset: 0; background: rgba(27,34,54,.45); display: none; align-items: center;
+           justify-content: center; padding: 12px; z-index: 5; }
+  .modal.open { display: flex; }
+  .sheet { background: #fff; border-radius: 18px; width: 100%; max-width: 560px; padding: 18px; max-height: 96vh; overflow: auto; }
+  label { display: block; font-size: 14px; font-weight: 600; margin: 12px 0 6px; }
+  input[type=text] { width: 100%; padding: 10px 12px; font-size: 16px; border: 1px solid #c5cde0; border-radius: 10px; }
+  input.code { font-size: 24px; letter-spacing: 8px; text-align: center; max-width: 220px; }
+  .tabs { display: flex; gap: 8px; margin-top: 12px; }
+  .tabs button { padding: 7px 14px; font-size: 14px; }
+  .tabs button.on { background: #ecebff; border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  canvas.pad { width: 100%; height: 170px; border: 1px solid #c5cde0; border-radius: 12px; background: #fff;
+               touch-action: none; display: block; margin-top: 8px; }
+  .check { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; margin-top: 12px; }
+  .row { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; align-items: center; }
+  .error { color: var(--bad); font-weight: 600; font-size: 14px; }
+  .done { color: var(--ok); font-weight: 700; font-size: 18px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1 id="title">Loading…</h1>
+    <div class="muted" id="from"></div>
+    <div class="msg" id="message"></div>
+    <div class="error" id="error"></div>
+  </div>
+
+  <div class="card hidden" id="verifyCard">
+    <b>Only the person this was sent to can open it.</b>
+    <p class="muted" id="verifyText"></p>
+    <div class="row"><button class="primary" id="sendCodeBtn">Email me a code</button></div>
+    <div class="hidden" id="codeRow">
+      <label for="code">Code from the email</label>
+      <div class="row" style="margin-top:0"><input type="text" class="code" id="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code">
+        <button class="primary" id="openBtn">Open the document</button>
+        <button id="resendBtn">Send another code</button></div>
+    </div>
+    <div class="error" id="verifyError"></div>
+  </div>
+
+  <div class="card hidden" id="doneCard">
+    <div class="done">Signed. Thank you!</div>
+    <p class="muted" id="doneText"></p>
+    <div class="row"><button id="copyBtn">Download a copy of what you signed</button></div>
+  </div>
+
+  <div class="pages" id="pages"></div>
+</div>
+
+<div class="bar hidden" id="bar">
+  <span class="muted" id="barText">Tap the <b>Sign here</b> box on the document.</span>
+  <button class="primary" id="finishBtn" disabled>Finish and send</button>
+</div>
+
+<div class="modal" id="modal">
+  <div class="sheet">
+    <h1>Your signature</h1>
+    <label for="name">Full name</label>
+    <input type="text" id="name" autocomplete="name" maxlength="120">
+    <div class="tabs"><button type="button" id="tabDraw" class="on">Draw</button>
+      <button type="button" id="tabType">Type</button></div>
+    <canvas class="pad" id="pad"></canvas>
+    <div class="row" style="margin-top:6px"><button type="button" id="clearBtn">Clear</button></div>
+    <div class="check"><input type="checkbox" id="agree">
+      <label for="agree" style="margin:0;font-weight:400">I agree that this is my signature and that I am signing this document electronically.</label></div>
+    <div class="error" id="padError"></div>
+    <div class="row" style="justify-content:flex-end"><button type="button" id="cancelBtn">Cancel</button>
+      <button type="button" class="primary" id="adoptBtn">Sign</button></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  function $(id) { return document.getElementById(id); }
+  var ID = location.pathname.split('/').pop();
+  var hash = new URLSearchParams(location.hash.slice(1));
+  var KEY = hash.get('k') || '';
+  var TEST_CODE = hash.get('test');          // automated tests only
+  var ERRORS = {
+    'not-found': 'This signing link is not valid. Ask the sender for a new one.',
+    'cancelled': 'The sender cancelled this request.', 'expired': 'This signing link has expired. Ask the sender for a new one.',
+    'already-signed': 'This document has already been signed.', 'code-expired': 'That code has expired. Ask for another one.',
+    'wrong-code': 'That code is not right. Check the email and try again.',
+    'too-many-attempts': 'Too many wrong codes. Ask for a new code.', 'verify-again': 'Please verify your email again.',
+    'email-failed': 'The email could not be sent. Try again in a minute.', 'server': 'Something went wrong. Try again in a minute.'
+  };
+  var S = {token: '', pkg: null, png: null, method: '', name: '', signed: false};
+
+  function explain(err) {
+    return ERRORS[err.error] || err.detail || ('Something went wrong (' + (err.error || err) + ').');
+  }
+  async function api(path, opts) {
+    opts = opts || {};
+    var headers = opts.headers || {};
+    if (S.token) headers.authorization = 'Bearer ' + S.token;
+    var resp = await fetch('/api/s/' + ID + path, {method: opts.method || 'GET', headers: headers, body: opts.body});
+    var type = resp.headers.get('content-type') || '';
+    var data = type.indexOf('json') >= 0 ? await resp.json() : await resp.text();
+    if (!resp.ok) throw (typeof data === 'object' ? data : {error: 'server'});
+    return data;
+  }
+  function showError(text) { $('error').textContent = text; }
+
+  // ---- crypto: AES-GCM with the key from the link (#k=...); 12-byte IV in front
+  function b64ToBytes(b64) { var s = atob(b64), a = new Uint8Array(s.length); for (var i = 0; i < s.length; i++) a[i] = s.charCodeAt(i); return a; }
+  function bytesToB64(bytes) { var s = ''; for (var i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); }
+  function keyBytes() { return b64ToBytes(KEY.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - KEY.length % 4) % 4)); }
+  async function cryptoKey() { return crypto.subtle.importKey('raw', keyBytes(), 'AES-GCM', false, ['encrypt', 'decrypt']); }
+  async function decrypt(bytes) {
+    var plain = await crypto.subtle.decrypt({name: 'AES-GCM', iv: bytes.subarray(0, 12)}, await cryptoKey(), bytes.subarray(12));
+    return new Uint8Array(plain);
+  }
+  async function encrypt(bytes) {
+    var iv = crypto.getRandomValues(new Uint8Array(12));
+    var ct = new Uint8Array(await crypto.subtle.encrypt({name: 'AES-GCM', iv: iv}, await cryptoKey(), bytes));
+    var out = new Uint8Array(12 + ct.length); out.set(iv); out.set(ct, 12); return out;
+  }
+
+  // ---- 1. who is it for
+  async function start() {
+    if (!KEY) { $('title').textContent = 'This link is incomplete'; showError('Open the whole link from the email (it ends with a long code).'); return; }
+    try {
+      var info = (await api('/info')).request;
+      $('title').textContent = 'Please sign: ' + info.title;
+      $('from').textContent = 'From ' + (info.requester_name ? info.requester_name + ' <' + info.requester + '>' : info.requester);
+      $('message').textContent = info.message || '';
+      if (info.status === 'signed' || info.status === 'completed') { showDone('This document has already been signed.'); return; }
+      if (info.status !== 'waiting') { showError(ERRORS[info.status] || 'This request is no longer open.'); return; }
+      if (info.quick) { openDocument(true); return; }
+      $('verifyText').textContent = 'To open it, we will email a 6-digit code to ' + info.signer_email + '.';
+      $('verifyCard').classList.remove('hidden');
+      if (TEST_CODE) sendCode();
+    } catch (e) { $('title').textContent = 'Cannot open this link'; showError(explain(e)); }
+  }
+
+  // ---- 2. prove it's their inbox
+  async function sendCode() {
+    $('verifyError').textContent = ''; $('sendCodeBtn').disabled = true;
+    try {
+      var r = await api('/code', {method: 'POST'});
+      $('sendCodeBtn').classList.add('hidden'); $('codeRow').classList.remove('hidden');
+      $('verifyText').textContent = 'We emailed a code to ' + r.to + '. It works for 10 minutes.';
+      $('code').focus();
+      if (TEST_CODE) { $('code').value = TEST_CODE; openDocument(); }
+    } catch (e) { $('verifyError').textContent = explain(e); $('sendCodeBtn').disabled = false; }
+  }
+  $('sendCodeBtn').onclick = sendCode;
+  $('resendBtn').onclick = sendCode;
+  $('code').addEventListener('keydown', function (e) { if (e.key === 'Enter') openDocument(); });
+
+  async function openDocument(quick) {
+    $('verifyError').textContent = ''; $('openBtn').disabled = true; $('openBtn').textContent = 'Opening…';
+    try {
+      var r = quick === true ? await api('/open', {method: 'POST'})
+        : await api('/verify', {method: 'POST', headers: {'content-type': 'application/json'},
+                                body: JSON.stringify({code: $('code').value.trim()})});
+      S.token = r.token;
+      var text = '';
+      for (var i = 0; i < r.parts; i++) text += await api('/doc?part=' + i);
+      S.pkg = JSON.parse(new TextDecoder().decode(await decrypt(b64ToBytes(text))));
+      $('verifyCard').classList.add('hidden');
+      showDocument();
+      if (TEST_CODE) autoSign();
+    } catch (e) {
+      $('openBtn').disabled = false; $('openBtn').textContent = 'Open the document';
+      if (quick === true) { showError(explain(e)); return; }
+      $('verifyError').textContent = e && e.name === 'OperationError' ? 'This link is damaged: open the whole link from the email.' : explain(e);
+    }
+  }
+  $('openBtn').onclick = openDocument;
+
+  // ---- 3. read and sign on the document
+  var fieldBox = null;
+  function showDocument() {
+    var D = S.pkg;
+    D.pages.forEach(function (pg, i) {
+      var div = document.createElement('div'); div.className = 'page';
+      var img = document.createElement('img'); img.className = 'bg'; img.alt = 'Page ' + (i + 1);
+      img.src = 'data:image/jpeg;base64,' + pg.img; div.appendChild(img);
+      if (i === D.field.page) {
+        var box = document.createElement('div'); box.className = 'field'; box.textContent = 'Sign here';
+        box.style.left = (D.field.x * 100) + '%'; box.style.top = (D.field.y * 100) + '%';
+        box.style.width = (D.field.w * 100) + '%'; box.style.height = (D.field.h * 100) + '%';
+        box.onclick = openPad; div.appendChild(box); fieldBox = box;
+      }
+      $('pages').appendChild(div);
+    });
+    $('bar').classList.remove('hidden');
+    setTimeout(function () { if (fieldBox) fieldBox.scrollIntoView({block: 'center', behavior: 'smooth'}); }, 400);
+  }
+
+  var pad = $('pad'), ctx = pad.getContext('2d'), drawn = false, last = null, lastMid = null, mode = 'draw';
+  function sizePad() {
+    var r = pad.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    pad.width = Math.max(1, Math.round(r.width * dpr)); pad.height = Math.max(1, Math.round(r.height * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111827';
+    drawn = false; if (mode === 'type') typeSignature();
+  }
+  function pt(e) { var r = pad.getBoundingClientRect(); return {x: e.clientX - r.left, y: e.clientY - r.top, p: e.pressure || 0.5}; }
+  pad.addEventListener('pointerdown', function (e) { if (mode !== 'draw') return; pad.setPointerCapture(e.pointerId); last = pt(e); lastMid = last; });
+  pad.addEventListener('pointermove', function (e) {
+    if (!last || mode !== 'draw') return;
+    var p = pt(e), mid = {x: (last.x + p.x) / 2, y: (last.y + p.y) / 2};
+    ctx.lineWidth = 1.6 + 2.2 * (e.pointerType === 'pen' ? p.p : 0.6);
+    ctx.beginPath(); ctx.moveTo(lastMid.x, lastMid.y); ctx.quadraticCurveTo(last.x, last.y, mid.x, mid.y); ctx.stroke();
+    last = p; lastMid = mid; drawn = true;
+  });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (t) { pad.addEventListener(t, function () { last = null; }); });
+  function clearPad() { ctx.clearRect(0, 0, pad.width, pad.height); drawn = false; }
+  function typeSignature() {
+    clearPad(); var name = $('name').value.trim(); if (!name) return;
+    var r = pad.getBoundingClientRect(), size = Math.min(56, r.width / Math.max(4, name.length * 0.55));
+    ctx.fillStyle = '#111827'; ctx.textBaseline = 'middle';
+    ctx.font = 'italic ' + size + 'px "Segoe Script", "Brush Script MT", "Lucida Handwriting", cursive';
+    ctx.fillText(name, 16, r.height / 2); drawn = true;
+  }
+  function setMode(m) { mode = m; $('tabDraw').classList.toggle('on', m === 'draw'); $('tabType').classList.toggle('on', m === 'type');
+                        if (m === 'type') typeSignature(); else clearPad(); }
+  $('tabDraw').onclick = function () { setMode('draw'); };
+  $('tabType').onclick = function () { setMode('type'); };
+  $('name').addEventListener('input', function () { if (mode === 'type') typeSignature(); });
+  $('clearBtn').onclick = function () { if (mode === 'type') $('name').value = ''; clearPad(); };
+  $('cancelBtn').onclick = function () { $('modal').classList.remove('open'); };
+  window.addEventListener('resize', function () { if ($('modal').classList.contains('open')) sizePad(); });
+
+  function openPad() {
+    if (S.signed) return;
+    $('modal').classList.add('open');
+    if (!$('name').value) $('name').value = S.pkg.signer_name || '';
+    $('padError').textContent = ''; sizePad();
+  }
+  function trimmed() {
+    var w = pad.width, h = pad.height, px = ctx.getImageData(0, 0, w, h).data, x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) if (px[(y * w + x) * 4 + 3] > 10) {
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    if (x1 < 0) return null;
+    var m = 6; x0 = Math.max(0, x0 - m); y0 = Math.max(0, y0 - m); x1 = Math.min(w - 1, x1 + m); y1 = Math.min(h - 1, y1 + m);
+    var out = document.createElement('canvas'); out.width = x1 - x0 + 1; out.height = y1 - y0 + 1;
+    out.getContext('2d').drawImage(pad, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
+    return out.toDataURL('image/png');
+  }
+  $('adoptBtn').onclick = function () {
+    var name = $('name').value.trim();
+    if (!name) { $('padError').textContent = 'Please type your full name.'; return; }
+    if (mode === 'type') typeSignature();
+    var png = drawn ? trimmed() : null;
+    if (!png) { $('padError').textContent = mode === 'draw' ? 'Please draw your signature in the box.' : 'Please type your name.'; return; }
+    if (!$('agree').checked) { $('padError').textContent = 'Please tick the box to agree.'; return; }
+    S.png = png; S.method = mode; S.name = name;
+    fieldBox.innerHTML = ''; var im = document.createElement('img'); im.src = png; fieldBox.appendChild(im);
+    fieldBox.classList.add('done'); $('modal').classList.remove('open');
+    $('finishBtn').disabled = false; $('barText').innerHTML = 'Signed as <b></b>. Tap the box to change it.';
+    $('barText').querySelector('b').textContent = name;
+  };
+
+  // ---- 4. send the (encrypted) signature: the sender's Aupedean picks it up by itself
+  async function finish() {
+    $('finishBtn').disabled = true; $('barText').textContent = 'Sending…';
+    try {
+      var result = {format: 'aupedean-sign-result/1', name: S.name, method: S.method, agreed: true,
+                    signature_png: S.png.split(',')[1], client_time: new Date().toISOString()};
+      var sealed = await encrypt(new TextEncoder().encode(JSON.stringify(result)));
+      await api('/sign', {method: 'POST', headers: {'content-type': 'text/plain'}, body: bytesToB64(sealed)});
+      S.signed = true;
+      $('bar').classList.add('hidden');
+      showDone('Your signature was sent to ' + (S.pkg.requester_name || S.pkg.requester_email || 'the sender') +
+               '. It is added to their document automatically.');
+    } catch (e) { $('barText').textContent = explain(e); $('finishBtn').disabled = false; }
+  }
+  $('finishBtn').onclick = finish;
+
+  function showDone(text) {
+    $('verifyCard').classList.add('hidden');
+    $('doneText').textContent = text; $('doneCard').classList.remove('hidden');
+    $('copyBtn').classList.toggle('hidden', !S.pkg || !S.png);
+    window.scrollTo({top: 0, behavior: 'smooth'});
+  }
+
+  // ---- a copy for the signer: the signature drawn into the PDF, in this browser
+  function loadPdfLib() {
+    return new Promise(function (resolve, reject) {
+      if (window.PDFLib) return resolve(window.PDFLib);
+      var s = document.createElement('script'); s.src = '/pdf-lib.js';
+      s.onload = function () { resolve(window.PDFLib); }; s.onerror = reject; document.head.appendChild(s);
+    });
+  }
+  $('copyBtn').onclick = async function () {
+    var L = await loadPdfLib(), D = S.pkg, pdf = await L.PDFDocument.load(b64ToBytes(D.pdf));
+    var sig = await pdf.embedPng(b64ToBytes(S.png.split(',')[1])), page = pdf.getPage(D.field.page), r = D.pdf_rect;
+    var bw = r[2] - r[0], bh = r[3] - r[1], s = Math.min(bw / sig.width, bh / sig.height), w = sig.width * s, h = sig.height * s;
+    page.drawImage(sig, {x: r[0] + (bw - w) / 2, y: r[1] + (bh - h) / 2, width: w, height: h});
+    var font = await pdf.embedFont(L.StandardFonts.Helvetica);
+    page.drawText('Signed by ' + S.name + ', ' + new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC (your copy)',
+                  {x: r[0], y: r[1] - 7, size: 5.5, font: font, color: L.rgb(0.35, 0.38, 0.45)});
+    var url = URL.createObjectURL(new Blob([await pdf.save()], {type: 'application/pdf'}));
+    var a = document.createElement('a'); a.href = url; a.download = (D.title || 'document') + ' - signed.pdf';
+    document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 2000);
+  };
+
+  function autoSign() {   // tests: sign as "Test Signer" by typing
+    openPad(); $('name').value = 'Test Signer'; setMode('type'); $('agree').checked = true; $('adoptBtn').onclick();
+    finish().then(function () { var d = document.createElement('div'); d.id = 'selftest-done'; d.textContent = S.signed ? 'signed' : 'failed'; document.body.appendChild(d); });
+  }
+
+  start();
+})();
+</script>
+</body>
+</html>

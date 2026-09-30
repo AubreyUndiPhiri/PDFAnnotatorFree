@@ -384,7 +384,7 @@ def build(photo, out, preview=None):
 def render_preview(font_path, out_png):
     """Key image: each written letter labelled with the English letter it
     types, plus sample text."""
-    import fitz
+    import pymupdf as fitz
 
     doc = fitz.open()
     page = doc.new_page(width=720, height=560)

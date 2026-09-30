@@ -182,7 +182,8 @@ TOOL_HINTS = {
     Tool.LINE: "Drag to draw a line.",
     Tool.ARROW: "Drag to draw an arrow.",
     Tool.TEXTBOX: "Click on the page and type. Drag first to set the box width. Esc or click outside to finish.",
-    Tool.FORMULA: "Click on the page and type a formula or label. Esc or click outside to finish.",
+    Tool.FORMULA: "Click on the page and type LaTeX maths (e.g. \\frac{a}{b}). The preview shows it rendered; "
+                  "Enter places it, Shift+Enter adds a line, Esc cancels. Double-click a formula to edit it.",
     Tool.STAMP: "Drag to place the selected stamp.",
     Tool.IMAGE_STAMP: "Drag to place the chosen image.",
     Tool.EXTRACT_TEXT: "Drag across text to copy it to the clipboard.",

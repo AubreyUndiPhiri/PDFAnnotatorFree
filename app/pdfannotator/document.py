@@ -1,5 +1,13 @@
 """In-memory PDF document wrapper with linear undo/redo via byte snapshots."""
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF
+
+
+class PasswordRequired(Exception):
+    """The PDF is encrypted and no (or a wrong) password was given."""
+
+    def __init__(self, path, wrong=False):
+        super().__init__(f"{'Wrong password for' if wrong else 'A password is needed to open'} {path}")
+        self.wrong = wrong
 
 
 class PDFDocument:
@@ -38,10 +46,13 @@ class PDFDocument:
         self._dirty = False
         self.invalidate_page_cache()
 
-    def load(self, path: str):
+    def load(self, path: str, password: str | None = None):
         with open(path, "rb") as f:
             data = f.read()
         doc = fitz.open(stream=data, filetype="pdf")
+        if doc.needs_pass and not doc.authenticate(password or ""):
+            doc.close()
+            raise PasswordRequired(path, wrong=bool(password))
         self.doc = doc
         self.path = path
         self._reset_history()

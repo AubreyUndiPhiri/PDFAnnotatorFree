@@ -1,9 +1,10 @@
 """Helper functions that operate directly on a fitz.Page to create/edit annotations."""
 import io
+import json
 import zlib
 from functools import lru_cache
 
-import fitz
+import pymupdf as fitz
 from PySide6.QtGui import QColor
 
 from . import fonts
@@ -91,13 +92,70 @@ def add_note(page: fitz.Page, point, text, color) -> fitz.Annot:
     return annot
 
 
-def add_ink(page: fitz.Page, points, color, width) -> fitz.Annot:
-    coords = [(p.x, p.y) for p in points]
+PRESSURE_KEY = "AupPressure"   # per-point stroke widths of a pressure-sensitive pen stroke
+
+
+def _xy(p):
+    return (p.x, p.y) if hasattr(p, "x") else (float(p[0]), float(p[1]))
+
+
+def add_ink(page: fitz.Page, points, color, width, widths=None) -> fitz.Annot:
+    """A pen stroke. With `widths` (one per point, from pen pressure) the
+    stroke is drawn thicker and thinner along its length; the PDF still holds
+    a normal ink annotation, so other viewers show at least a plain line."""
+    coords = [_xy(p) for p in points]
     annot = page.add_ink_annot([coords])
     annot.set_colors(stroke=color_to_rgb(color))
-    annot.set_border(width=width)
+    annot.set_border(width=max(widths) if widths else width)
     annot.update()
+    if widths and len(widths) == len(coords):
+        page.parent.xref_set_key(annot.xref, PRESSURE_KEY,
+                                 "[" + " ".join(f"{w:.3f}" for w in widths) + "]")
+        _apply_pressure_appearance(annot)
     return annot
+
+
+def pressure_widths(annot):
+    """The per-point widths of a pressure stroke, or None."""
+    if annot is None or annot.type[0] != fitz.PDF_ANNOT_INK:
+        return None
+    kind, value = annot.parent.parent.xref_get_key(annot.xref, PRESSURE_KEY)
+    if kind != "array":
+        return None
+    try:
+        return [float(v) for v in value.strip("[]").split()]
+    except ValueError:
+        return None
+
+
+def _apply_pressure_appearance(annot):
+    """Draw a pressure stroke segment by segment, each with its own width
+    (round caps and joins, so the segments flow into one tapered line)."""
+    widths = pressure_widths(annot)
+    if not widths:
+        return False
+    strokes = annot.vertices or []
+    points = [tuple(pt) for stroke in strokes for pt in stroke]
+    if len(points) != len(widths) or len(points) < 2:
+        return False
+    doc = annot.parent.parent
+    rect = annot.rect
+    w, h = max(rect.width, 1), max(rect.height, 1)
+    color = (annot.colors or {}).get("stroke") or (0, 0, 0)
+    scratch = fitz.open()
+    sp = scratch.new_page(width=w, height=h)
+    shape = sp.new_shape()
+    for (a, b), (wa, wb) in zip(zip(points, points[1:]), zip(widths, widths[1:])):
+        shape.draw_line((a[0] - rect.x0, a[1] - rect.y0), (b[0] - rect.x0, b[1] - rect.y0))
+        shape.finish(color=color, width=(wa + wb) / 2, lineCap=1, lineJoin=1, closePath=False)
+    shape.commit()
+    content = sp.read_contents()
+    kind, ap = doc.xref_get_key(annot.xref, "AP/N")
+    xobj = int(ap.split()[0]) if kind == "xref" else doc.get_new_xref()
+    doc.update_object(xobj, f"<</Type/XObject/Subtype/Form/BBox[0 0 {w:g} {h:g}]/Resources<<>>>>")
+    doc.update_stream(xobj, content)
+    doc.xref_set_key(annot.xref, "AP", f"<</N {xobj} 0 R>>")
+    return True
 
 
 def add_rect(page: fitz.Page, rect, color, width) -> fitz.Annot:
@@ -389,6 +447,48 @@ def insert_image(page: fitz.Page, rect, image_path: str = None, image_bytes: byt
         page.insert_image(rect, filename=image_path)
 
 
+# ---------------------------------------------------------------------------
+# Formulas: LaTeX rendered to a picture, kept in a stamp annotation together
+# with its source so it can be moved, resized and edited again
+# ---------------------------------------------------------------------------
+
+FORMULA_KEY = "AupFormula"
+
+
+def add_formula(page: fitz.Page, origin, rendered, source, fontsize, color_rgb, rect=None) -> fitz.Annot:
+    """A stamp showing `rendered` (formula.Rendered) with its top-left at
+    `origin` (or filling `rect`), remembering the LaTeX `source`."""
+    if rect is None:
+        # the picture's exact proportions, so MuPDF doesn't centre (and shift) it in the box
+        pix = fitz.Pixmap(rendered.png)
+        height = rendered.width_pt * pix.height / pix.width if pix.width else rendered.height_pt
+        rect = fitz.Rect(origin.x, origin.y, origin.x + rendered.width_pt, origin.y + height)
+    annot = page.add_stamp_annot(fitz.Rect(rect), stamp=rendered.png)
+    annot.set_info(content=source, subject="Formula", title="Aupedean Annotator")
+    annot.update()
+    data = {"source": source, "fontsize": float(fontsize), "color": [int(c) for c in color_rgb[:3]],
+            "engine": rendered.engine}
+    page.parent.xref_set_key(annot.xref, FORMULA_KEY, fitz.get_pdf_str(json.dumps(data)))
+    return annot
+
+
+def formula_data(annot):
+    """{"source", "fontsize", "color", "engine"} of a formula stamp, else None."""
+    if annot is None or annot.type[0] != fitz.PDF_ANNOT_STAMP:
+        return None
+    kind, value = annot.parent.parent.xref_get_key(annot.xref, FORMULA_KEY)
+    if kind != "string":
+        return None
+    try:
+        return json.loads(value)
+    except ValueError:
+        return None
+
+
+def is_formula(annot) -> bool:
+    return formula_data(annot) is not None
+
+
 def find_annot_at(page: fitz.Page, point: fitz.Point):
     for annot in page.annots():
         if annot.rect.contains(point):
@@ -396,12 +496,41 @@ def find_annot_at(page: fitz.Page, point: fitz.Point):
     return None
 
 
-def move_annot(annot: fitz.Annot, dx: float, dy: float):
+# Annotations positioned by their points, not their rect (MuPDF refuses set_rect for them)
+_VERTEX_KEYS = {fitz.PDF_ANNOT_INK: "InkList", fitz.PDF_ANNOT_LINE: "L", fitz.PDF_ANNOT_POLYGON: "Vertices",
+                fitz.PDF_ANNOT_POLY_LINE: "Vertices"}
+
+
+def _move_vertices(annot, dx, dy):
+    """Shift an ink / line / polygon annotation by rewriting its points."""
+    doc, page = annot.parent.parent, annot.parent
+    to_pdf = ~page.transformation_matrix  # page coordinates -> PDF user space
+
+    def pdf(pt):
+        q = fitz.Point(pt[0] + dx, pt[1] + dy) * to_pdf
+        return f"{q.x:.3f} {q.y:.3f}"
+
+    kind = annot.type[0]
+    vertices = annot.vertices or []
+    if kind == fitz.PDF_ANNOT_INK:
+        value = "[" + "".join("[" + " ".join(pdf(pt) for pt in stroke) + "]" for stroke in vertices) + "]"
+    else:
+        value = "[" + " ".join(pdf(pt) for pt in vertices) + "]"
+    doc.xref_set_key(annot.xref, _VERTEX_KEYS[kind], value)
     r = annot.rect
-    new_rect = fitz.Rect(r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy)
-    annot.set_rect(new_rect)
+    doc.xref_set_key(annot.xref, "Rect", "[{:.3f} {:.3f} {:.3f} {:.3f}]".format(
+        *fitz.Rect(r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy).transform(to_pdf).normalize()))
+
+
+def move_annot(annot: fitz.Annot, dx: float, dy: float):
+    if annot.type[0] in _VERTEX_KEYS:
+        _move_vertices(annot, dx, dy)
+    else:
+        r = annot.rect
+        annot.set_rect(fitz.Rect(r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy))
     annot.update()
     _apply_custom_appearance(annot)
+    _apply_pressure_appearance(annot)
 
 
 # ---------------------------------------------------------------------------
@@ -543,6 +672,8 @@ def serialize_annot(annot: fitz.Annot) -> dict:
         data["vertices"] = list(annot.vertices)
     elif type_name == "Ink":
         data["vertices"] = list(annot.vertices)
+        data["pressure"] = pressure_widths(annot)
+        data["opacity"] = annot.opacity
     elif type_name in ("Polygon", "Line"):
         data["vertices"] = list(annot.vertices)
         if type_name == "Line":
@@ -550,6 +681,8 @@ def serialize_annot(annot: fitz.Annot) -> dict:
             data["arrow"] = bool(ends and ends[1] not in (0, None))
     elif type_name == "FreeText":
         data["text_style"] = freetext_style(annot)
+    elif type_name == "Stamp" and is_formula(annot):
+        data["formula"] = formula_data(annot)
     return data
 
 
@@ -574,8 +707,16 @@ def deserialize_and_add(page: fitz.Page, data: dict, offset=(0.0, 0.0), override
         strokes = [[tuple(shift(p)) for p in stroke_pts] for stroke_pts in data["vertices"]]
         annot = page.add_ink_annot(strokes)
         annot.set_colors(stroke=stroke)
-        annot.set_border(width=width)
+        widths = data.get("pressure")
+        if widths and override_width is not None and max(widths):
+            widths = [w * override_width / max(widths) for w in widths]
+        annot.set_border(width=max(widths) if widths else width)
+        if data.get("opacity") is not None and 0 <= data["opacity"] < 1:
+            annot.set_opacity(data["opacity"])
         annot.update()
+        if widths:
+            page.parent.xref_set_key(annot.xref, PRESSURE_KEY, "[" + " ".join(f"{w:.3f}" for w in widths) + "]")
+            _apply_pressure_appearance(annot)
         return annot
     if type_name == "Polygon":
         pts = [tuple(shift(p)) for p in data["vertices"]]
@@ -609,6 +750,15 @@ def deserialize_and_add(page: fitz.Page, data: dict, offset=(0.0, 0.0), override
         annot.set_colors(stroke=stroke)
         annot.update()
         return annot
+    if type_name == "Stamp" and data.get("formula"):
+        from . import formula
+
+        f = data["formula"]
+        color = f["color"] if override_color is None else [round(c * 255) for c in override_color]
+        rendered = formula.render(f["source"], f["fontsize"], color)
+        r = data["rect"]
+        rect = fitz.Rect(r[0] + dx, r[1] + dy, r[2] + dx, r[3] + dy)
+        return add_formula(page, rect.tl, rendered, f["source"], f["fontsize"], color, rect=rect)
     if type_name in ("Square", "Circle"):
         r = data["rect"]
         rect = fitz.Rect(r[0] + dx, r[1] + dy, r[2] + dx, r[3] + dy)

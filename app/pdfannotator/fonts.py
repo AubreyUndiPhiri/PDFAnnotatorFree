@@ -65,8 +65,6 @@ def register_custom_fonts() -> dict[str, str]:
     """Load handwriting/custom font files into Qt (for on-screen preview) and
     remember their paths (for PDF embedding). Safe to call again after a new
     font file was added. Needs a QGuiApplication."""
-    from PySide6.QtGui import QFontDatabase
-
     _migrate_old_user_fonts()
     known = {info["path"] for info in _custom_fonts.values()}
     for folder in (FONTS_DIR, USER_FONTS_DIR):
@@ -288,6 +286,48 @@ def preview_font(name: str, pixel_size: int | None = None):
     if pixel_size:
         font.setPixelSize(max(4, int(pixel_size)))
     return font
+
+
+def family_files(name: str) -> dict | None:
+    """Font files for the family of `name`, keyed regular / bold / italic /
+    bolditalic (only the styles that exist), for LaTeX fontspec. None for
+    the base-14 fonts and unknown names."""
+    info = _info(name)
+    if not info:
+        return None
+    pool = _custom_fonts if name in _custom_fonts else _library_fonts if name in _library_fonts else _system_fonts
+    files = {}
+    for other in pool.values():
+        if other["family"] != info["family"]:
+            continue
+        key = ("bold" if other["bold"] else "") + ("italic" if other["italic"] else "") or "regular"
+        files.setdefault(key, other["path"])
+    files.setdefault("regular", info["path"])
+    return files
+
+
+def match_family(pdf_font_name: str) -> str | None:
+    """Best font-list name for a font name found inside a PDF (e.g.
+    'ABCDEF+Lora-BoldItalic', 'ArialMT', 'TimesNewRomanPS-BoldMT'), or None."""
+    base = pdf_font_name.split("+", 1)[-1]
+    base = base.split(",")[0].split("-")[0]
+    for suffix in ("PSMT", "MT", "PS", "Std", "Pro"):
+        if base.endswith(suffix) and len(base) > len(suffix) + 2:
+            base = base[: -len(suffix)]
+    key = "".join(ch for ch in base.lower() if ch.isalnum())
+    if not key:
+        return None
+    aliases = {"helvetica": "Helvetica", "arial": "Arial", "times": "Times", "timesroman": "Times",
+               "courier": "Courier", "couriernew": "Courier New"}
+    if key in aliases and aliases[key] in available_fonts():
+        return aliases[key]
+    for pool in (_custom_fonts, _library_fonts, _system_fonts):
+        for name, info in pool.items():
+            if info["bold"] or info["italic"]:
+                continue
+            if "".join(ch for ch in info["family"].lower() if ch.isalnum()) == key:
+                return name
+    return None
 
 
 def pdf_font_ref(name: str) -> str:

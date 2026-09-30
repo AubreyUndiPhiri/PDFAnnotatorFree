@@ -5,7 +5,15 @@ a = Analysis(
     ['app/main.py'],
     pathex=['app'],
     binaries=[],
-    datas=[('app/assets', 'assets')],
+    datas=[('app/assets', 'assets'),
+           # run by an external Python with PyTorch, so it ships as a plain file
+           ('app/pdfannotator/latex/hf_worker.py', 'pdfannotator/latex'),
+           # the signing web page, installed in the user's Google account
+           ('app/pdfannotator/cloud/apps_script', 'pdfannotator/cloud/apps_script'),
+           # the signing-file page (pdf-lib itself ships in assets/js)
+           ('app/pdfannotator/cloud/signing_file', 'pdfannotator/cloud/signing_file'),
+           # the signature service, installed into the owner's Cloudflare account
+           ('app/pdfannotator/cloud/sign_service', 'pdfannotator/cloud/sign_service')],
     hiddenimports=['PySide6.QtSvg'],
     hookspath=[],
     hooksconfig={},

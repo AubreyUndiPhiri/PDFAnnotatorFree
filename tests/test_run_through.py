@@ -11,7 +11,7 @@ import traceback
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
-import fitz
+import pymupdf as fitz
 import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor
@@ -73,6 +73,7 @@ def harness(app, tmp_path, monkeypatch):
     monkeypatch.setattr(QInputDialog, "getInt", staticmethod(lambda *a, **k: (2, True)))
     monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("Answer", True)))
     monkeypatch.setattr(QInputDialog, "getMultiLineText", staticmethod(lambda *a, **k: ("A comment", True)))
+    monkeypatch.setattr(QInputDialog, "getItem", staticmethod(lambda parent, title, label, items, *a, **k: (items[0], True)))
     monkeypatch.setattr(QColorDialog, "getColor", staticmethod(lambda *a, **k: QColor(30, 90, 200)))
     for kind in ("information", "warning", "critical"):
         monkeypatch.setattr(QMessageBox, kind, staticmethod(lambda *a, k=kind, **kw: messages.append((k, a[2] if len(a) > 2 else ""))))
@@ -105,6 +106,49 @@ def _menu_actions(menu, path=""):
             yield label, act
 
 
+def _back_to_pdf(win):
+    from pdfannotator.document_tab import DocumentTab
+
+    for i in range(win.tabs.count()):
+        if isinstance(win.tabs.widget(i), DocumentTab) and win.tabs.widget(i).document.page_count:
+            win.tabs.setCurrentIndex(i)
+            return
+
+
+def test_menu_commands_with_editor_tabs(app, harness):
+    """With a Word or LaTeX tab active, every command that stays enabled
+    must work on it (the PDF-only ones are disabled)."""
+    win, errors, messages = harness
+    import shiboken6
+
+    for make in (win.new_word_document, win.new_latex_document):
+        editor = make()
+        assert editor is not None and win.current_editor() is editor
+        assert not win.tool_toolbar.isVisible() and not win.act_split.isEnabled()
+        editor.text_widget().insertPlainText("Some text to work with.")
+        for label, act in list(_menu_actions(win.menuBar())):
+            if not shiboken6.isValid(act) or act.text().replace("&", "") in SKIP | {"Close", "Close All"}:
+                continue
+            if not act.isEnabled() or label.startswith("Window"):
+                continue
+            if win.current_editor() is not editor:
+                win.tabs.setCurrentWidget(editor)
+            before = len(errors)
+            try:
+                act.trigger()
+                for _ in range(3):
+                    app.processEvents()
+            except Exception:
+                errors.append(traceback.format_exc())
+            assert len(errors) == before, f"{label}:\n{errors[-1]}"
+            if win.isFullScreen():
+                win.showNormal()
+    _back_to_pdf(win)
+    assert win.tool_toolbar.isVisible() and win.act_split.isEnabled()
+    criticals = [m for m in messages if m[0] == "critical"]
+    assert not criticals, criticals
+
+
 def test_every_menu_command(app, harness):
     win, errors, messages = harness
     failures = []
@@ -117,6 +161,9 @@ def test_every_menu_command(app, harness):
         if act.text().replace("&", "") in SKIP or not act.isEnabled():
             continue
         before = len(errors)
+        _back_to_pdf(win)  # "New Word Document" and co. switch tabs; run the PDF commands on the PDF
+        if not act.isEnabled():
+            continue
         try:
             tab = win.current_tab()
             if tab is not None and tab.document.page_count and not tab.selected:

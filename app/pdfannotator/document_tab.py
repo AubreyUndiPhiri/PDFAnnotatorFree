@@ -1,22 +1,23 @@
 import math
 import os
-import fitz
+import pymupdf as fitz
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QFileDialog, QMessageBox,
-    QInputDialog,
+    QInputDialog, QToolButton,
 )
 from PySide6.QtGui import QGuiApplication, QImage, QPixmap, QPainter, QColor
-from PySide6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer
+from PySide6.QtCore import Qt, QPoint, QPointF, QRectF, QSize, QTimer
 
 from .document import PDFDocument
 from .page_widget import PageWidget
 from .thumbnail_panel import ThumbnailPanel
 from .guide_overlay import GuideLine, LaserDot
 from .inline_text import InlineTextEditor
+from .formula_editor import FormulaEditor
 from . import handles
 from .tools import Tool, TOOL_HINTS, UNITS
-from . import fonts, pdf_ops, theme
+from . import fonts, pdf_ops, strokes, theme
 
 
 class PageCanvas(QWidget):
@@ -109,6 +110,14 @@ class DocumentTab(QWidget):
         self.window.pending_image_path = value
 
     @property
+    def ink_smoothing(self):
+        return getattr(self.window, "ink_smoothing", True)
+
+    @property
+    def ink_pressure(self):
+        return getattr(self.window, "ink_pressure", False)
+
+    @property
     def unit_name(self):
         return UNITS[self.unit_index][0]
 
@@ -144,9 +153,28 @@ class DocumentTab(QWidget):
 
         self.laser_dot = LaserDot(self.pages_container)
 
+        # The page-thumbnails button sits right beside the thumbnails, on a
+        # slim rail that stays when they are hidden, so they can be shown again
+        self.sidebar_rail = QWidget()
+        self.sidebar_rail.setObjectName("sidebarRail")
+        rail = QVBoxLayout(self.sidebar_rail)
+        rail.setContentsMargins(6, 8, 0, 8)
+        rail.setSpacing(4)
+        self.sidebar_button = QToolButton()
+        self.sidebar_button.setObjectName("sidebarButton")
+        self.sidebar_button.setIconSize(QSize(18, 18))
+        self.sidebar_button.setAutoRaise(True)
+        act = getattr(self.window, "act_sidebar", None)
+        if act is not None:
+            self.sidebar_button.setDefaultAction(act)
+            self.thumbnails.setVisible(act.isChecked())
+        rail.addWidget(self.sidebar_button)
+        rail.addStretch(1)
+
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+        outer.addWidget(self.sidebar_rail)
         outer.addWidget(self.thumbnails)
         outer.addWidget(self.scroll_area, 1)
 
@@ -161,8 +189,8 @@ class DocumentTab(QWidget):
         self.selected = []
         self.rebuild_viewer()
 
-    def load(self, path: str):
-        self.document.load(path)
+    def load(self, path: str, password: str | None = None):
+        self.document.load(path, password)
         self.selected = []
         self.rebuild_viewer()
 
@@ -556,22 +584,33 @@ class DocumentTab(QWidget):
     def start_image_stamp(self, path):
         self.pending_image_path = path
         self.window.set_tool(Tool.IMAGE_STAMP)
-        self.set_hint(f"Drag on the page to place the image.")
+        self.set_hint("Drag on the page to place the image.")
 
     # ---------------------------------------------------------------
     # Interaction callbacks invoked by PageWidget
     # ---------------------------------------------------------------
 
-    def commit_ink(self, widget, points):
+    def commit_ink(self, widget, points, pressures=None):
+        """A pen stroke: smoothed when Smooth handwriting is on, thicker and
+        thinner along its length when `pressures` (0-1 per point) are given."""
         page = widget.page()
-        pdf_ops.add_ink(page, points, self.current_color, self.current_width)
+        pts, pres = strokes.smooth_stroke([(p.x, p.y) for p in points], pressures,
+                                          1.0 if self.ink_smoothing else 0.0)
+        if len(pts) < 2:
+            return
+        widths = [strokes.width_for(self.current_width, p) for p in pres] if pressures else None
+        pdf_ops.add_ink(page, pts, self.current_color, self.current_width, widths=widths)
         self.document.snapshot()
         widget.render()
         self.refresh_thumbnail(widget.page_index)
 
     def commit_marker(self, widget, points):
         page = widget.page()
-        pdf_ops.add_marker(page, points, self.current_color, self.current_width, self.current_opacity)
+        pts, _ = strokes.smooth_stroke([(p.x, p.y) for p in points], None, 1.0 if self.ink_smoothing else 0.0)
+        if len(pts) < 2:
+            return
+        pdf_ops.add_marker(page, [fitz.Point(*p) for p in pts], self.current_color, self.current_width,
+                           self.current_opacity)
         self.document.snapshot()
         widget.render()
         self.refresh_thumbnail(widget.page_index)
@@ -734,6 +773,9 @@ class DocumentTab(QWidget):
         if pdf_ops.is_text_box(annot):
             self.begin_text_edit(widget, annot=annot)
             return
+        if pdf_ops.is_formula(annot):
+            self.begin_formula_edit(widget, annot=annot)
+            return
         if annot.type[0] != fitz.PDF_ANNOT_TEXT:
             return
         text, ok = QInputDialog.getMultiLineText(self, "Edit Note", "Comment:", annot.info.get("content", ""))
@@ -798,6 +840,103 @@ class DocumentTab(QWidget):
                           "annot": annot, "align": align, "flags": flags, "original": original}
         self.set_hint("Type your text. Press Esc or click outside the box to finish.")
 
+    def begin_formula_edit(self, widget, origin_pdf=None, annot=None):
+        """Open the formula editor at `origin_pdf`, or on the formula `annot`
+        to change it (it is hidden while being edited)."""
+        self.finish_text_editing()
+        text, flags = "", None
+        fontsize, color = self.current_fontsize, self.current_color
+        if annot is not None:
+            data = pdf_ops.formula_data(annot) or {}
+            text = data.get("source", annot.info.get("content", ""))
+            fontsize = data.get("fontsize", fontsize)
+            color = QColor(*data.get("color", (0, 0, 0)))
+            origin_pdf = fitz.Point(annot.rect.x0, annot.rect.y0)
+            if self.current_tool != Tool.FORMULA:
+                self.window.set_tool(Tool.FORMULA)
+            tool_style = self.window.tool_styles[Tool.FORMULA]
+            tool_style["fontsize"] = int(round(fontsize))
+            tool_style["color"] = (color.red(), color.green(), color.blue())
+            self.window._refresh_style_controls()
+            flags = annot.flags
+            self.document.doc.xref_set_key(annot.xref, "F", str(flags | fitz.PDF_ANNOT_IS_HIDDEN))
+            widget.render()
+        origin_px = self.pdf_to_px(widget, origin_pdf)
+        editor = FormulaEditor(widget, QPoint(round(origin_px.x()), round(origin_px.y())), self.px_per_pt(widget),
+                               fontsize, color, text=text)
+        editor.finished.connect(self.finish_text_editing)
+        editor.show()
+        editor.setFocus()
+        self.text_edit = {"kind": "formula", "widget": widget, "editor": editor, "origin": fitz.Point(origin_pdf),
+                          "annot": annot, "flags": flags,
+                          "original": (text, float(fontsize), (color.red(), color.green(), color.blue()))}
+        self.set_hint("Type LaTeX maths; the preview shows how it will look. Enter places it, Esc cancels.")
+
+    def _finish_formula(self, state, accept):
+        """Place (or update) the formula being edited. If it can't be
+        rendered the editor stays open with the error, and None is returned."""
+        editor, widget, annot = state["editor"], state["widget"], state["annot"]
+        page = widget.page()
+        source = editor.text()
+        rgb = (editor.color.red(), editor.color.green(), editor.color.blue())
+        unchanged = state["original"] == (source, editor.fontsize, rgb)
+
+        def close_editor():
+            editor.hide()
+            editor.deleteLater()
+            if annot is not None:
+                self.document.doc.xref_set_key(annot.xref, "F", str(state["flags"]))
+
+        if not accept or (annot is not None and unchanged):
+            close_editor()
+            widget.render()
+            self.set_hint(TOOL_HINTS.get(self.current_tool, ""))
+            if annot is not None:
+                self.selected = [(widget.page_index, annot)]
+                widget.update()
+            return annot
+        if not source:
+            close_editor()
+            if annot is not None:  # everything deleted: remove the formula
+                page.delete_annot(annot)
+                self.document.snapshot()
+                self.refresh_thumbnail(widget.page_index)
+            widget.render()
+            return None
+        rendered = editor.result()
+        if rendered is None:
+            from . import formula
+
+            QGuiApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                rendered = formula.render(source, editor.fontsize, rgb)
+            except formula.FormulaError as e:
+                self.text_edit = state  # keep typing: show what is wrong
+                editor.show_error(str(e))
+                editor.setFocus()
+                self.set_hint("This formula has an error; fix it, or press Esc to cancel.")
+                return None
+            finally:
+                QGuiApplication.restoreOverrideCursor()
+        close_editor()
+        try:
+            origin = state["origin"]
+            if annot is not None:
+                page.delete_annot(annot)
+            annot = pdf_ops.add_formula(page, origin, rendered, source, editor.fontsize, rgb)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "Error", f"Could not add the formula:\n{e}")
+            widget.render()
+            return None
+        self.document.snapshot()
+        self.refresh_thumbnail(widget.page_index)
+        widget.render()
+        self.window.set_tool(Tool.SELECT)
+        annot = next((a for a in widget.page().annots() if a.xref == annot.xref), annot)
+        self.selected = [(widget.page_index, annot)]
+        widget.update()
+        return annot
+
     def update_text_edit_style(self):
         """Toolbar font/size/colour changed: restyle the box being typed in."""
         if self.text_edit is None:
@@ -806,12 +945,15 @@ class DocumentTab(QWidget):
         editor.set_style(self.current_fontname, self.current_fontsize, self.current_color)
         editor.setFocus()
 
-    def finish_text_editing(self):
-        """Write the on-page editor's text into the PDF, then select the box
-        so it can be moved or resized straight away. Returns the annotation."""
+    def finish_text_editing(self, accept=True):
+        """Write the on-page editor's text (or formula) into the PDF, then
+        select it so it can be moved or resized straight away. Returns the
+        annotation. accept=False (Esc in the formula editor) cancels."""
         state, self.text_edit = self.text_edit, None
         if state is None:
             return None
+        if state.get("kind") == "formula":
+            return self._finish_formula(state, accept)
         editor, widget, annot = state["editor"], state["widget"], state["annot"]
         text = editor.toPlainText().rstrip()
         fontname, fontsize, color = editor.fontname, editor.fontsize, editor.color

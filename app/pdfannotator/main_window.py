@@ -5,12 +5,13 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QTabWidget, QTabBar, QToolBar, QToolButton, QFileDialog, QMessageBox,
     QInputDialog, QColorDialog, QSpinBox, QDoubleSpinBox, QComboBox, QLabel,
-    QStatusBar, QMenu, QWidget, QSizePolicy,
+    QStatusBar, QMenu, QWidget, QSizePolicy, QWidgetAction,
 )
 from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QShortcut, QIcon, QPixmap, QPainter
 from PySide6.QtCore import Qt, QSize, QRectF
 
 from .document_tab import DocumentTab
+from .editor_tab import EditorTab
 from . import fonts, icons, theme
 from .dialogs import SignaturePadDialog, PropertiesDialog, ToolStylesDialog, FindBar, HandwritingFontDialog
 from .tools import (
@@ -121,6 +122,9 @@ class MainWindow(QMainWindow):
         self.statusBar().setSizeGripEnabled(False)
         self.hint_label = QLabel("")
         self.statusBar().addWidget(self.hint_label, 1)
+        self.status_sync_label = QLabel("")
+        self.status_sync_label.setObjectName("syncStatus")
+        self.statusBar().addPermanentWidget(self.status_sync_label)
         self.status_tool_label = QLabel("")
         self.status_page_label = QLabel("")
         self.status_zoom_label = QLabel("")
@@ -136,7 +140,14 @@ class MainWindow(QMainWindow):
         self._build_menu()
 
     def current_tab(self) -> DocumentTab:
-        return self.tabs.currentWidget()
+        """The active PDF tab, or None while a Word / LaTeX tab is active."""
+        widget = self.tabs.currentWidget()
+        return widget if isinstance(widget, DocumentTab) else None
+
+    def current_editor(self) -> EditorTab:
+        """The active Word / LaTeX tab, or None while a PDF tab is active."""
+        widget = self.tabs.currentWidget()
+        return widget if isinstance(widget, EditorTab) else None
 
     def _action(self, text, slot, icon=None, shortcut=None, tip=None, checkable=False):
         act = QAction(text, self)
@@ -163,6 +174,10 @@ class MainWindow(QMainWindow):
         tab = self.current_tab
         a = self._action
         self.act_new = a("New Document", self.new_tab, "file-new", "Ctrl+T")
+        self.act_new_word = a("New Word Document", self.new_word_document, "file-word", "Ctrl+Alt+W",
+                              tip="Write a new Word document here")
+        self.act_new_latex = a("New LaTeX Document...", self.new_latex_document, "file-latex", "Ctrl+Alt+L",
+                               tip="Write a new LaTeX document here, from a template")
         self.act_open = a("Open...", self.open_document, "open", QKeySequence.Open)
         self.act_save = a("Save", self.save_document, "save", QKeySequence.Save)
         self.act_save_as = a("Save As...", self.save_document_as, None, QKeySequence.SaveAs)
@@ -172,6 +187,10 @@ class MainWindow(QMainWindow):
         self.act_split = a("Split Every Page to Separate Files...", self.split_pdf, "split")
         self.act_properties = a("Properties...", self.show_properties, "properties", "Ctrl+D")
         self.act_mail = a("Send Mail...", self.send_mail, "mail")
+        self.act_to_word = a("Convert to Word...", lambda: self.convert_document("word"), "file-word",
+                             "Ctrl+Shift+W", tip="Convert the PDF to an editable Word document")
+        self.act_to_latex = a("Convert to LaTeX...", lambda: self.convert_document("latex"), "file-latex",
+                              "Ctrl+Shift+L", tip="Convert the PDF to an editable LaTeX project")
 
         self.act_undo = a("Undo", self.undo, "undo", QKeySequence.Undo)
         self.act_redo = a("Redo", self.redo, "redo", QKeySequence.Redo)
@@ -183,9 +202,9 @@ class MainWindow(QMainWindow):
         self.act_image = a("Insert Image...", self.insert_image_stamp, "image")
         self.act_signature = a("Draw Signature...", self.insert_drawn_signature, "signature")
 
-        self.act_zoom_in = a("Zoom In", lambda: tab().zoom_in(), "zoom-in", QKeySequence.ZoomIn)
-        self.act_zoom_out = a("Zoom Out", lambda: tab().zoom_out(), "zoom-out", QKeySequence.ZoomOut)
-        self.act_actual = a("Actual Size", lambda: tab().actual_size(), "actual-size", "Ctrl+0")
+        self.act_zoom_in = a("Zoom In", lambda: self._zoom("zoom_in", "zoom_in"), "zoom-in", QKeySequence.ZoomIn)
+        self.act_zoom_out = a("Zoom Out", lambda: self._zoom("zoom_out", "zoom_out"), "zoom-out", QKeySequence.ZoomOut)
+        self.act_actual = a("Actual Size", lambda: self._zoom("actual_size", "reset_zoom"), "actual-size", "Ctrl+0")
         self.act_fit_page = a("Fit Page", lambda: tab().fit_to_size(), "fit-page", "Ctrl+5")
         self.act_fit_width = a("Fit Width", lambda: tab().fit_to_width(), "fit-width", "Ctrl+6")
         self.act_first = a("First Page", lambda: tab().go_to_page(0), "first-page")
@@ -194,9 +213,24 @@ class MainWindow(QMainWindow):
         self.act_next = a("Next Page", lambda: tab().go_to_page(tab().current_page_index() + 1),
                           "chevron-right")
         self.act_last = a("Last Page", lambda: tab().go_to_page(tab().document.page_count - 1), "last-page")
-        self.act_sidebar = a("Page Thumbnails", self._toggle_sidebar, "sidebar", "F4", checkable=True)
+        self.act_sidebar = a("Page Thumbnails", self._toggle_sidebar, "sidebar", "F4", checkable=True,
+                             tip="Show or hide the page thumbnails")
         self.act_sidebar.setChecked(True)
+        # Pen / marker options, remembered between sessions
+        settings = theme._settings()
+        self.ink_smoothing = settings.value("draw/smooth", "true") == "true"
+        self.ink_pressure = settings.value("draw/pressure", "false") == "true"
+        self.act_smooth_ink = a("Smooth Handwriting", self._set_ink_smoothing, "smooth-stroke", checkable=True,
+                                tip="Smooth out shaky pen and marker strokes")
+        self.act_smooth_ink.setChecked(self.ink_smoothing)
+        self.act_pressure_ink = a("Pressure Sensitivity", self._set_ink_pressure, "pressure", checkable=True,
+                                  tip="Pen strokes get thicker and thinner: with a pen tablet or stylus from "
+                                      "how hard you press, with a mouse from how fast you draw")
+        self.act_pressure_ink.setChecked(self.ink_pressure)
         self.act_fullscreen = a("Full Screen", self.toggle_full_screen, "fullscreen", "Ctrl+L")
+        self.act_dark = a("Dark Mode", self.toggle_dark_mode, "moon", "Ctrl+Shift+D", checkable=True,
+                          tip="Switch between the light (glass) and dark (clay) look")
+        self.act_dark.setChecked(theme.mode == theme.DARK)
 
     @staticmethod
     def _spacer(width=None):
@@ -218,14 +252,18 @@ class MainWindow(QMainWindow):
         for act in (self.act_open, self.act_save, self.act_print):
             bar.addAction(act)
         bar.addSeparator()
+        bar.addAction(self.act_to_word)
+        bar.addAction(self.act_to_latex)
+        bar.addSeparator()
         bar.addAction(self.act_undo)
         bar.addAction(self.act_redo)
         bar.addSeparator()
         bar.addAction(self.act_image)
         bar.addAction(self.act_signature)
+        self._request_signature_slot = bar.addSeparator()  # the Request Signature button goes here
         bar.addSeparator()
         bar.addAction(self.act_find)
-        bar.addAction(self.act_sidebar)
+        bar.addAction(self.act_dark)
 
         bar.addWidget(self._spacer())
 
@@ -239,7 +277,7 @@ class MainWindow(QMainWindow):
         self.zoom_combo.lineEdit().returnPressed.connect(
             lambda: self._on_zoom_combo_changed(self.zoom_combo.currentIndex())
         )
-        bar.addWidget(self.zoom_combo)
+        self._zoom_combo_action = bar.addWidget(self.zoom_combo)
         bar.addAction(self.act_zoom_in)
         bar.addAction(self.act_fit_width)
         bar.addAction(self.act_fit_page)
@@ -252,10 +290,10 @@ class MainWindow(QMainWindow):
         self.page_spin.setFixedWidth(62)
         self.page_spin.setAlignment(Qt.AlignRight)
         self.page_spin.setToolTip("Go to page")
-        self.page_spin.valueChanged.connect(lambda v: self.current_tab().go_to_page(v - 1))
-        bar.addWidget(self.page_spin)
+        self.page_spin.valueChanged.connect(lambda v: self.current_tab() and self.current_tab().go_to_page(v - 1))
+        self._page_widget_actions = [bar.addWidget(self.page_spin)]
         self.page_count_label = QLabel("of 1")
-        bar.addWidget(self.page_count_label)
+        self._page_widget_actions.append(bar.addWidget(self.page_count_label))
         bar.addAction(self.act_next)
 
     def _build_toolbar(self):
@@ -301,7 +339,7 @@ class MainWindow(QMainWindow):
         self.color_btn.setIconSize(QSize(18, 18))
         self.color_btn.setToolTip("Colour")
         self.color_btn.clicked.connect(self.pick_color)
-        prop("color", "Colour", self.color_btn)
+        prop("color", None, self.color_btn)  # the swatch explains itself (tooltip: Colour)
 
         self.width_spin = QDoubleSpinBox()
         self.width_spin.setRange(0.5, 20.0)
@@ -310,7 +348,7 @@ class MainWindow(QMainWindow):
         self.width_spin.setSuffix(" pt")
         self.width_spin.setToolTip("Line width")
         self.width_spin.valueChanged.connect(self._set_width)
-        prop("width", "Width", self.width_spin)
+        prop("width", None, self.width_spin)  # "2.5 pt" (tooltip: Line width)
 
         self.font_family_combo = QComboBox()
         fonts.fill_font_combo(self.font_family_combo, offer_create=True)
@@ -338,6 +376,12 @@ class MainWindow(QMainWindow):
         self.unit_combo.currentIndexChanged.connect(self._on_unit_changed)
         prop("unit", "Unit", self.unit_combo)
 
+        for key, act in (("smooth", self.act_smooth_ink), ("pressure", self.act_pressure_ink)):
+            button = QToolButton()
+            button.setObjectName(f"{key}Toggle")
+            button.setDefaultAction(act)  # icon-only (the toolbar is full); the tooltip names it
+            prop(key, None, button)
+
         self._refresh_style_controls()
 
     def _make_tool_action(self, tool):
@@ -361,10 +405,12 @@ class MainWindow(QMainWindow):
         visible = {
             "color": tool in STYLED_TOOLS,
             "width": tool in WIDTH_TOOLS,
-            "font": tool in FONT_TOOLS,
+            "font": tool in FONT_TOOLS and tool != Tool.FORMULA,  # maths is set in its own fonts
             "fontsize": tool in FONT_TOOLS,
             "stamp": tool == Tool.STAMP,
             "unit": tool in UNIT_TOOLS,
+            "smooth": tool in (Tool.INK, Tool.MARKER),
+            "pressure": tool == Tool.INK,
         }
         for key, acts in self._property_actions.items():
             for act in acts:
@@ -376,7 +422,57 @@ class MainWindow(QMainWindow):
         self._build_edit_menu(menubar)
         self._build_tool_menu(menubar)
         self._build_view_menu(menubar)
+        from .cloud.ui import CloudController
+
+        self.cloud = CloudController(self)
+        self.cloud.build_menu(menubar)
+        file_actions = self._file_menu.actions()
+        after_open = file_actions[file_actions.index(self.act_open) + 1] if self.act_open in file_actions[:-1] else None
+        self._file_menu.insertAction(after_open, self.cloud.act_open)
+        # signing: in the File menu and on the main toolbar
+        after_convert = self.act_to_latex
+        file_actions = self._file_menu.actions()
+        anchor = file_actions[file_actions.index(after_convert) + 1] if after_convert in file_actions[:-1] else None
+        self._file_menu.insertActions(anchor, [self.cloud.act_request, self.cloud.act_requests,
+                                               self.cloud.act_add_returned, self.cloud.act_sign_account])
+        self.nav_toolbar.insertAction(self._request_signature_slot, self.cloud.act_request)
+        button = self.nav_toolbar.widgetForAction(self.cloud.act_request)
+        if button is not None:  # labelled: it's the one new users look for
+            button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            button.setText("Request Signature")
+            button.setPopupMode(QToolButton.InstantPopup)   # the three ways, Quick Email first
         self._build_window_menu(menubar)
+        self._collect_pdf_only_actions()
+
+    def _collect_pdf_only_actions(self):
+        """Every command that only makes sense on a PDF: they are disabled
+        while a Word or LaTeX tab is active (so their shortcuts don't fire
+        into the editor either)."""
+        shared = {self.act_new, self.act_new_word, self.act_new_latex, self.act_open, self.act_save,
+                  self.act_save_as, self.act_save_all, self.act_print, self.act_undo, self.act_redo, self.act_cut,
+                  self.act_copy, self.act_paste, self.act_find, self.act_zoom_in, self.act_zoom_out,
+                  self.act_actual, self.act_fullscreen, self.act_dark, self.nav_toolbar_action}
+        shared |= self.cloud.shared_actions()
+        found = []
+
+        def walk(menu):
+            for act in menu.actions():
+                if act.isSeparator():
+                    continue
+                if act.menu():
+                    walk(act.menu())
+                elif act not in shared and act.text().replace("&", "") not in ("Close", "Close All", "Exit"):
+                    found.append(act)
+
+        for top in self.menuBar().actions():
+            if top.menu() and top.menu() is not self.window_menu and top.menu() is not self.favorites_menu:
+                walk(top.menu())
+        for bar in (self.nav_toolbar, self.tool_toolbar):
+            for act in bar.actions():  # toolbar-only commands (widgets are hidden separately)
+                if not (act.isSeparator() or act in shared or act in found or isinstance(act, QWidgetAction)):
+                    found.append(act)
+        self._pdf_only_actions = [a for a in found if a not in self._page_widget_actions
+                                  and a is not self._zoom_combo_action]
 
     def _add_menu_action(self, menu, text, slot, shortcut=None, checkable=False, icon=None):
         act = QAction(text, self)
@@ -393,12 +489,15 @@ class MainWindow(QMainWindow):
 
     def _build_file_menu(self, menubar):
         m = menubar.addMenu("&File")
-        m.addActions([self.act_new, self.act_open])
+        m.addActions([self.act_new, self.act_new_word, self.act_new_latex, self.act_open])
+        self._file_menu = m  # "Open from Google Drive..." is added here by the Google Drive menu
         m.addSeparator()
         m.addActions([self.act_save, self.act_save_as, self.act_save_all])
         self._add_menu_action(m, "Save as Template...", self.save_as_template)
         m.addSeparator()
         m.addActions([self.act_combine, self.act_split])
+        m.addSeparator()
+        m.addActions([self.act_to_word, self.act_to_latex])
         m.addSeparator()
         m.addActions([self.act_properties, self.act_mail, self.act_print])
         m.addSeparator()
@@ -451,6 +550,8 @@ class MainWindow(QMainWindow):
                 m.addAction(self.tool_actions[tool])
 
         m.addSeparator()
+        m.addActions([self.act_smooth_ink, self.act_pressure_ink])
+        m.addSeparator()
         hw_menu = m.addMenu(icons.icon("signature"), "Handwriting Font")
         self._add_menu_action(hw_menu, "Create Font from Your Handwriting...", self.create_handwriting_font,
                               icon="signature")
@@ -492,6 +593,7 @@ class MainWindow(QMainWindow):
         m.addActions([self.act_actual, self.act_fit_page, self.act_fit_width])
         m.addSeparator()
         m.addAction(self.act_fullscreen)
+        m.addAction(self.act_dark)
         self._add_menu_action(m, "Full Screen (in Window)", self.toggle_full_screen_in_window, "Alt+L")
         m.addSeparator()
 
@@ -554,8 +656,8 @@ class MainWindow(QMainWindow):
     # Tab lifecycle
     # ---------------------------------------------------------------
 
-    def _add_tab(self, tab, title):
-        index = self.tabs.addTab(tab, icons.icon("note"), title)
+    def _add_tab(self, tab, title, icon="note"):
+        index = self.tabs.addTab(tab, icons.icon(icon), title)
         close_btn = QToolButton()
         close_btn.setIcon(icons.icon("close"))
         close_btn.setIconSize(QSize(12, 12))
@@ -572,8 +674,26 @@ class MainWindow(QMainWindow):
         self._add_tab(tab, f"Untitled {self._untitled_counter}")
         return tab
 
-    def open_files_as_tabs(self, paths):
+    def open_files_as_tabs(self, paths, check_signed=True):
+        from .latex.editor import OPEN_SUFFIXES as LATEX_SUFFIXES
+        from .word_editor import OPEN_SUFFIXES as WORD_SUFFIXES
+
         for path in paths:
+            # a signed copy of one of our signing files: add the signature to the original instead
+            if check_signed and path.lower().endswith(".pdf") and hasattr(self, "cloud") \
+                    and self.cloud.take_returned(path):
+                continue
+            existing = self._tab_for_path(path)
+            if existing is not None:
+                self.tabs.setCurrentWidget(existing)
+                continue
+            ext = os.path.splitext(path)[1].lower()
+            if ext in WORD_SUFFIXES or ext == ".doc":
+                self._open_editor("word", path)
+                continue
+            if ext in LATEX_SUFFIXES:
+                self._open_editor("latex", path)
+                continue
             tab = DocumentTab(self)
             try:
                 tab.load(path)
@@ -583,18 +703,105 @@ class MainWindow(QMainWindow):
                 continue
             self._add_tab(tab, os.path.basename(path))
 
+    # ---- helpers the Google Drive sync uses (any kind of tab) ----------------
+    def tab_path(self, tab):
+        if isinstance(tab, EditorTab):
+            return tab.path
+        if isinstance(tab, DocumentTab):
+            return tab.document.path
+        return None
+
+    def tab_dirty(self, tab) -> bool:
+        if isinstance(tab, EditorTab):
+            return tab.dirty
+        return isinstance(tab, DocumentTab) and self._tab_dirty(tab)
+
+    def tab_for_path(self, path):
+        return self._tab_for_path(path) if path else None
+
+    def reload_tab(self, tab):
+        """Show the file's new content after Google Drive replaced it."""
+        if isinstance(tab, DocumentTab):
+            page = tab.current_page_index()
+            tab.load(tab.document.path)
+            tab.go_to_page(min(page, tab.document.page_count - 1))
+        elif isinstance(tab, EditorTab) and hasattr(tab, "watcher"):
+            return  # the LaTeX editor notices changed files by itself
+        elif isinstance(tab, EditorTab) and tab.path:
+            tab.load(tab.path)
+        self.on_tab_content_changed(tab)
+
+    def update_sync_status(self):
+        from .cloud import drive_desktop
+
+        path = self.tab_path(self.tabs.currentWidget())
+        text = self.cloud.sync.status_text(path) if path else ""
+        entry = self.cloud.sync.entry(path) if path else None
+        tip = f"Google Drive: {entry.name}" if entry else ""
+        if not text and path:
+            where = drive_desktop.containing_root(path)
+            if where:
+                text = f"In Google Drive ({where[0]}): Google Drive for desktop syncs every save"
+                tip = path
+        self.status_sync_label.setText(("☁ " + text) if text else "")
+        self.status_sync_label.setToolTip(tip)
+
+    def _tab_for_path(self, path):
+        want = os.path.normcase(os.path.abspath(path))
+        for i in range(self.tabs.count()):
+            tab = self.tabs.widget(i)
+            have = tab.path if isinstance(tab, EditorTab) else tab.document.path
+            if have and os.path.normcase(os.path.abspath(have)) == want:
+                return tab
+        return None
+
+    def _open_editor(self, kind, path=None, template=None):
+        try:
+            if kind == "word":
+                from .word_editor import WordTab
+
+                editor = WordTab(self, path)
+            else:
+                from .latex.editor import LatexTab
+
+                editor = LatexTab(self, path, template)
+        except Exception as e:  # noqa: BLE001 - a file that can't be read
+            QMessageBox.critical(self, "Error", f"Could not open file:\n{e}")
+            return None
+        editor.changed.connect(lambda e=editor: self.on_tab_content_changed(e))
+        editor.open_path_requested.connect(lambda p: self.open_files_as_tabs([p]))
+        self._add_tab(editor, editor.display_name(), editor.icon_name)
+        self.on_tab_content_changed(editor)
+        return editor
+
+    def new_word_document(self):
+        return self._open_editor("word")
+
+    def new_latex_document(self):
+        from .latex.editor import TEMPLATES
+
+        name, ok = QInputDialog.getItem(self, "New LaTeX Document", "Start from:", list(TEMPLATES), 0, False)
+        if ok:
+            return self._open_editor("latex", template=name)
+        return None
+
     def on_tab_content_changed(self, tab):
         index = self.tabs.indexOf(tab)
         if index < 0:
             return
+        editor = isinstance(tab, EditorTab)
         name = tab.display_name()
-        if tab.document.dirty:
+        if (tab.dirty if editor else tab.document.dirty):
             name = "● " + name
-        self.tabs.setTabText(index, name)
-        self.tabs.setTabToolTip(index, tab.document.path or "Not saved yet")
-        self._rebuild_window_menu()
-        if tab is self.current_tab():
-            self._sync_toolbar_to_tab(tab)
+        if self.tabs.tabText(index) != name:
+            self.tabs.setTabText(index, name)
+            self._rebuild_window_menu()
+        self.tabs.setTabToolTip(index, (tab.path if editor else tab.document.path) or "Not saved yet")
+        if tab is self.tabs.currentWidget():
+            if editor:
+                self._show_editor_status(tab)
+            else:
+                self._sync_toolbar_to_tab(tab)
 
     def on_zoom_changed(self, zoom):
         self.zoom_combo.setCurrentText(f"{int(zoom * 100)}%")
@@ -624,8 +831,38 @@ class MainWindow(QMainWindow):
         tab = self.tabs.widget(index)
         if tab is None:
             return
-        self._sync_toolbar_to_tab(tab)
+        editor = isinstance(tab, EditorTab)
+        for act in getattr(self, "_pdf_only_actions", []):
+            act.setEnabled(not editor)
+        self.tool_toolbar.setVisible(not editor and self.tool_toolbar_action.isChecked())
+        for act in self._page_widget_actions:
+            act.setVisible(not editor)
+        self._zoom_combo_action.setVisible(not editor)
+        zoomable = not editor or tab.supports_zoom
+        for act in (self.act_zoom_in, self.act_zoom_out, self.act_actual):
+            act.setEnabled(zoomable)
+        if editor:
+            self.hint_label.setText("")
+            self._show_editor_status(tab)
+        else:
+            self.status_tool_label.setText(TOOL_LABELS.get(self.current_tool, self.current_tool.name.title()))
+            self._sync_toolbar_to_tab(tab)
         self._rebuild_window_menu()
+        if hasattr(self, "cloud"):
+            self.update_sync_status()
+
+    def _show_editor_status(self, editor):
+        self.status_tool_label.setText(editor.kind_label)
+        self.status_page_label.setText(editor.status_text())
+        self.status_zoom_label.setText(f"{round(editor.zoom * 100)}%" if editor.supports_zoom else "")
+
+    def _zoom(self, pdf_method, editor_method):
+        editor = self.current_editor()
+        if editor is not None:
+            getattr(editor, editor_method)()
+            self._show_editor_status(editor)
+        elif self.current_tab() is not None:
+            getattr(self.current_tab(), pdf_method)()
 
     def _sync_toolbar_to_tab(self, tab):
         self._sync_page_controls(tab)
@@ -641,10 +878,11 @@ class MainWindow(QMainWindow):
 
     def _confirm_close_tab(self, tab) -> bool:
         """Returns True if it's OK to proceed closing (saved, discarded, or clean)."""
+        if isinstance(tab, EditorTab):
+            return tab.confirm_close()
         tab.finish_text_editing()
         if not self._tab_dirty(tab):
             return True
-        index = self.tabs.indexOf(tab)
         name = tab.display_name()
         resp = QMessageBox.question(
             self, "Unsaved Changes", f'Save changes to "{name}" before closing?',
@@ -791,14 +1029,18 @@ class MainWindow(QMainWindow):
             pct = float(text)
         except ValueError:
             return
-        self.current_tab().set_zoom(pct / 100.0)
+        if self.current_tab() is not None:
+            self.current_tab().set_zoom(pct / 100.0)
 
     # ---------------------------------------------------------------
     # Document lifecycle (File menu)
     # ---------------------------------------------------------------
 
     def open_document(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, "Open PDF", "", "PDF Files (*.pdf)")
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Open", "",
+            "All Supported (*.pdf *.docx *.tex *.bib *.odt *.html *.htm *.md *.txt);;PDF Files (*.pdf);;"
+            "Word Documents (*.docx);;LaTeX (*.tex *.bib *.sty *.cls);;Text and Web Pages (*.txt *.md *.html *.htm)")
         if not paths:
             return
         self.open_files_as_tabs(paths)
@@ -833,14 +1075,24 @@ class MainWindow(QMainWindow):
             self.on_tab_content_changed(tab)
 
     def save_document(self):
+        editor = self.current_editor()
+        if editor is not None:
+            if editor.save():
+                self.statusBar().showMessage(f"Saved to {editor.path}", 3000)
+            return
         tab = self.current_tab()
         if tab:
             self._save_tab(tab)
 
-    def save_document_as(self):
+    def save_document_as(self, directory=""):
+        editor = self.current_editor()
+        if editor is not None:
+            if editor.save_as(directory):
+                self.statusBar().showMessage(f"Saved to {editor.path}", 3000)
+            return
         tab = self.current_tab()
         if tab:
-            self._save_tab_as(tab)
+            self._save_tab_as(tab, directory=os.path.join(directory, tab.display_name()) if directory else "")
 
     def save_as_template(self):
         tab = self.current_tab()
@@ -858,7 +1110,10 @@ class MainWindow(QMainWindow):
     def save_all(self):
         for i in range(self.tabs.count()):
             tab = self.tabs.widget(i)
-            if tab.document.is_open and tab.document.dirty:
+            if isinstance(tab, EditorTab):
+                if tab.dirty:
+                    tab.save()
+            elif tab.document.is_open and tab.document.dirty:
                 self._save_tab(tab)
 
     def combine_files(self):
@@ -880,6 +1135,20 @@ class MainWindow(QMainWindow):
             return
         count = tab.split_pdf(directory)
         QMessageBox.information(self, "Split Complete", f"Saved {count} file(s) to {directory}")
+
+    def toggle_dark_mode(self, checked):
+        theme.set_mode(theme.DARK if checked else theme.LIGHT)
+
+    def convert_document(self, fmt):
+        tab = self.current_tab()
+        if not tab or not tab.document.is_open or tab.document.page_count == 0:
+            return
+        from . import convert_dialog
+
+        # A snapshot of the document as it is now, edits included; the
+        # conversion thread never touches the open document itself
+        self._conversion = convert_dialog.convert(self, fmt, tab.document.doc.tobytes(), tab.document.path,
+                                                  tab.display_name(), tab.document.page_count)
 
     def show_properties(self):
         tab = self.current_tab()
@@ -912,6 +1181,9 @@ class MainWindow(QMainWindow):
         )
 
     def print_document(self):
+        if self.current_editor() is not None:
+            self.current_editor().print_document()
+            return
         tab = self.current_tab()
         if not tab or not tab.document.is_open:
             return
@@ -956,26 +1228,41 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------
 
     def undo(self):
+        if self.current_editor() is not None:
+            self.current_editor().undo()
+            return
         tab = self.current_tab()
         if tab:
             tab.undo()
 
     def redo(self):
+        if self.current_editor() is not None:
+            self.current_editor().redo()
+            return
         tab = self.current_tab()
         if tab:
             tab.redo()
 
     def cut_selected(self):
+        if self.current_editor() is not None:
+            self.current_editor().cut()
+            return
         tab = self.current_tab()
         if tab:
             tab.cut_selected()
 
     def copy_selected(self):
+        if self.current_editor() is not None:
+            self.current_editor().copy()
+            return
         tab = self.current_tab()
         if tab:
             tab.copy_selected()
 
     def paste(self):
+        if self.current_editor() is not None:
+            self.current_editor().paste()
+            return
         tab = self.current_tab()
         if tab:
             tab.paste(override_style=False)
@@ -1012,6 +1299,9 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------
 
     def show_find_bar(self):
+        if self.current_editor() is not None:
+            self.current_editor().show_find()
+            return
         self.find_bar.show()
         self.find_bar.raise_()
         self.find_bar.focus_input()
@@ -1046,9 +1336,18 @@ class MainWindow(QMainWindow):
             tab.toggle_hide_annotations(checked)
 
     def _toggle_sidebar(self, checked):
-        tab = self.current_tab()
-        if tab:
-            tab.thumbnails.setVisible(checked)
+        for i in range(self.tabs.count()):  # one setting for every PDF tab
+            tab = self.tabs.widget(i)
+            if isinstance(tab, DocumentTab):
+                tab.thumbnails.setVisible(checked)
+
+    def _set_ink_smoothing(self, checked):
+        self.ink_smoothing = bool(checked)
+        theme._settings().setValue("draw/smooth", "true" if checked else "false")
+
+    def _set_ink_pressure(self, checked):
+        self.ink_pressure = bool(checked)
+        theme._settings().setValue("draw/pressure", "true" if checked else "false")
 
     def go_to_page_dialog(self):
         tab = self.current_tab()

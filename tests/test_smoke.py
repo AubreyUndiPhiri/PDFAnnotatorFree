@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
-import fitz
+import pymupdf as fitz
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtTest import QTest
 from PySide6.QtCore import Qt, QPoint

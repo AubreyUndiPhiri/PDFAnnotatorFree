@@ -1,13 +1,19 @@
-import fitz
-from PySide6.QtWidgets import QWidget
-from PySide6.QtGui import QPainter, QPixmap, QImage, QPen, QColor
-from PySide6.QtCore import Qt, QPoint, QRect
+import time
 
-from . import handles, pdf_ops, theme
+import pymupdf as fitz
+from PySide6.QtWidgets import QWidget
+from PySide6.QtGui import QPainter, QPainterPath, QPixmap, QImage, QPen, QColor
+from PySide6.QtCore import Qt, QPoint, QPointF, QRect
+
+from . import handles, pdf_ops, strokes, theme
 from .tools import Tool
 
 # Tools that collect a freehand point path while the mouse is dragging
 PATH_TOOLS = {Tool.INK, Tool.MARKER, Tool.ERASER, Tool.LASSO}
+# Freehand drawing tools: smoothed (and, for the pen, pressure-sensitive)
+DRAW_TOOLS = {Tool.INK, Tool.MARKER}
+STABILIZER = 0.45   # with Smooth on, each point moves this far towards the pointer (steadies shaky hands)
+TABLET_FRESH_S = 0.15  # a tablet reading this recent belongs to the mouse event Qt makes from it
 
 TEXT_TOOLS = (Tool.TEXTBOX, Tool.FORMULA)
 
@@ -49,6 +55,11 @@ class PageWidget(QWidget):
         self._drag_start = None
         self._drag_current = None
         self._path_points = []
+        self._path_pressure = []        # one per point while drawing with Pressure on
+        self._pressure_from_pen = False  # real tablet pressure (else simulated from speed)
+        self._speed_pressure = None
+        self._tablet_pressure = None
+        self._tablet_time = 0.0
 
         self._polygon_points_px = []
         self._polygon_rubber_px = None
@@ -131,7 +142,9 @@ class PageWidget(QWidget):
             pen = QPen(self.controller.current_color, max(1, int(self.controller.current_width)))
             painter.setPen(pen)
             tool = self.controller.current_tool
-            if tool in PATH_TOOLS and len(self._path_points) > 1:
+            if tool in DRAW_TOOLS and len(self._path_points) > 1:
+                self._paint_stroke_preview(painter, tool)
+            elif tool in PATH_TOOLS and len(self._path_points) > 1:
                 for i in range(1, len(self._path_points)):
                     painter.drawLine(self._path_points[i - 1], self._path_points[i])
             elif self._drag_start and self._drag_current:
@@ -146,6 +159,48 @@ class PageWidget(QWidget):
                 else:
                     painter.drawRect(r)
         painter.end()
+
+    def _paint_stroke_preview(self, painter, tool):
+        """The stroke being drawn: a smooth, antialiased curve, thicker and
+        thinner with the pressure when that is on."""
+        painter.setRenderHint(QPainter.Antialiasing)
+        color = QColor(self.controller.current_color)
+        if tool == Tool.MARKER:
+            color.setAlphaF(self.controller.current_opacity)
+        scale = self.controller.px_per_pt(self)
+        base = self.controller.current_width
+        pts = self._path_points
+        if tool == Tool.INK and self._path_pressure and len(self._path_pressure) == len(pts):
+            for i in range(1, len(pts)):
+                width = strokes.width_for(base, (self._path_pressure[i - 1] + self._path_pressure[i]) / 2) * scale
+                painter.setPen(QPen(color, max(0.8, width), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+                painter.drawLine(pts[i - 1], pts[i])
+        else:
+            path = QPainterPath(pts[0])
+            for i in range(1, len(pts) - 1):  # curves through the midpoints: no corners
+                mid = (pts[i] + pts[i + 1]) / 2
+                path.quadTo(pts[i], mid)
+            path.lineTo(pts[-1])
+            painter.setPen(QPen(color, max(1.0, base * scale), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(path)
+        painter.setRenderHint(QPainter.Antialiasing, False)
+
+    # ---- pen tablets / styluses: remember the pressure of the latest reading
+    def tabletEvent(self, event):
+        self._tablet_pressure = event.pressure()
+        self._tablet_time = time.monotonic()
+        event.ignore()  # Qt then sends the matching mouse event, which the tools use
+
+    def _pressure_now(self, pos_f, event):
+        if self._tablet_pressure is not None and time.monotonic() - self._tablet_time < TABLET_FRESH_S:
+            self._pressure_from_pen = True
+            return max(0.05, float(self._tablet_pressure))
+        if self._speed_pressure is None:
+            self._speed_pressure = strokes.SpeedPressure()
+        scale = max(0.01, self.controller.px_per_pt(self))
+        t = event.timestamp() if hasattr(event, "timestamp") else time.monotonic() * 1000
+        return self._speed_pressure.feed((pos_f.x() / scale, pos_f.y() / scale), float(t))
 
     def _paint_selection(self, painter):
         painter.setRenderHint(QPainter.Antialiasing)
@@ -214,6 +269,9 @@ class PageWidget(QWidget):
 
         if tool in TEXT_TOOLS:
             existing = pdf_ops.find_annot_at(self.page(), self.to_pdf_point(pos))
+            if tool == Tool.FORMULA and pdf_ops.is_formula(existing):
+                self.controller.begin_formula_edit(self, annot=existing)
+                return
             if pdf_ops.is_text_box(existing):
                 self.controller.begin_text_edit(self, annot=existing)
                 return
@@ -241,7 +299,13 @@ class PageWidget(QWidget):
         self._drag_start = pos
         self._drag_current = pos
         if tool in PATH_TOOLS:
-            self._path_points = [pos]
+            pos_f = event.position() if hasattr(event, "position") else QPointF(pos)
+            self._path_points = [QPointF(pos_f)]
+            self._path_pressure = []
+            self._pressure_from_pen = False
+            self._speed_pressure = None
+            if tool == Tool.INK and self.controller.ink_pressure:
+                self._path_pressure = [self._pressure_now(pos_f, event)]
         self.update()
 
     def mouseMoveEvent(self, event):
@@ -275,7 +339,13 @@ class PageWidget(QWidget):
             return
         self._drag_current = pos
         if tool in PATH_TOOLS:
-            self._path_points.append(pos)
+            pos_f = QPointF(event.position()) if hasattr(event, "position") else QPointF(pos)
+            if tool in DRAW_TOOLS and self.controller.ink_smoothing and self._path_points:
+                last = self._path_points[-1]
+                pos_f = last + (pos_f - last) * STABILIZER
+            self._path_points.append(pos_f)
+            if self._path_pressure:
+                self._path_pressure.append(self._pressure_now(pos_f, event))
         if tool == Tool.MEASURE:
             p1 = self.to_pdf_point(self._drag_start)
             p2 = self.to_pdf_point(pos)
@@ -337,21 +407,35 @@ class PageWidget(QWidget):
         self._drag_start = None
         self._drag_current = None
         path_points = self._path_points
+        pressures = self._path_pressure
         self._path_points = []
+        self._path_pressure = []
         self.update()
 
         if tool in PATH_TOOLS:
+            if tool in DRAW_TOOLS and path_points and self.controller.ink_smoothing:
+                end = QPointF(event.position()) if hasattr(event, "position") else QPointF(pos)
+                if (end - path_points[-1]).manhattanLength() > 0.5:
+                    path_points.append(end)  # the stabilizer lags: finish where the pen lifted
+                    if pressures:
+                        pressures.append(pressures[-1])
             if len(path_points) < 2:
                 return
             pts = [self.to_pdf_point(p) for p in path_points]
             if tool == Tool.INK:
-                self.controller.commit_ink(self, pts)
+                if pressures and not self._pressure_from_pen:
+                    pressures = strokes.taper(pressures)  # simulated: ease in and out like a real pen
+                self.controller.commit_ink(self, pts, pressures or None)
             elif tool == Tool.MARKER:
                 self.controller.commit_marker(self, pts)
             elif tool == Tool.ERASER:
                 self.controller.commit_eraser(self, pts)
             elif tool == Tool.LASSO:
                 self.controller.commit_lasso(self, pts)
+            return
+
+        if tool == Tool.FORMULA:
+            self.controller.begin_formula_edit(self, origin_pdf=self.to_pdf_point(QRect(start, end).normalized().topLeft()))
             return
 
         if tool in TEXT_TOOLS:

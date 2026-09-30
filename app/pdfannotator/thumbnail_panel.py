@@ -1,4 +1,3 @@
-import fitz
 from PySide6.QtWidgets import QListWidget, QListWidgetItem, QAbstractItemView, QMenu
 from PySide6.QtGui import QImage, QPixmap, QIcon, QPainter, QColor
 from PySide6.QtCore import Qt, QSize, Signal

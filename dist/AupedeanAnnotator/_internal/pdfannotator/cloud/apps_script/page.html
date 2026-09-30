@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<style>
+  :root { --ink:#1b2236; --muted:#5d6781; --accent:#4f46e5; --line:#dfe4f0; --bad:#dc2626; --ok:#15803d; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--ink);
+         background: linear-gradient(135deg, #c5d3ff, #e6d9ff 45%, #c3ede2); min-height: 100vh; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 20px 16px 60px; }
+  .card { background: rgba(255,255,255,.86); border: 1px solid #fff; border-radius: 18px; padding: 18px;
+          box-shadow: 0 8px 28px rgba(90,78,175,.18); margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .muted { color: var(--muted); font-size: 14px; }
+  .msg { white-space: pre-wrap; margin-top: 10px; font-size: 15px; }
+  .pages { display: flex; flex-direction: column; gap: 14px; align-items: center; }
+  .page { position: relative; width: 100%; background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.15); }
+  .page img { display: block; width: 100%; height: auto; }
+  .field { position: absolute; border: 2px dashed var(--accent); background: rgba(79,70,229,.10);
+           border-radius: 4px; display: flex; align-items: center; justify-content: center;
+           color: var(--accent); font-weight: 600; font-size: 13px; cursor: pointer; }
+  label { display: block; font-size: 14px; font-weight: 600; margin: 12px 0 6px; }
+  input[type=text] { width: 100%; padding: 10px 12px; font-size: 16px; border: 1px solid #c5cde0; border-radius: 10px; }
+  .pad { width: 100%; height: 190px; border: 1px solid #c5cde0; border-radius: 12px; background: #fff;
+         touch-action: none; display: block; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  button { font: inherit; font-size: 15px; padding: 10px 18px; border-radius: 999px; border: 1px solid #c5cde0;
+           background: #fff; cursor: pointer; }
+  button.primary { background: linear-gradient(#8d86f8, #5a51ea); color: #fff; border-color: #3c34c4; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .check { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; margin-top: 12px; }
+  .error { color: var(--bad); font-weight: 600; }
+  .done { color: var(--ok); font-weight: 600; font-size: 18px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card" id="head">
+    <h1 id="title">Loading the document…</h1>
+    <div class="muted" id="sub">Signed in as <span id="me"></span></div>
+    <div class="msg" id="message"></div>
+    <div class="error" id="error"></div>
+  </div>
+
+  <div class="card hidden" id="doneCard"><div class="done" id="doneText"></div>
+    <p class="muted">You can close this page. The sender gets the signed document automatically.</p></div>
+
+  <div class="card hidden" id="signCard">
+    <p class="muted">Read the document below. The box marked <b>Sign here</b> is where your signature goes.</p>
+    <label for="name">Your full name</label>
+    <input type="text" id="name" autocomplete="name" maxlength="120">
+    <label>Your signature (draw it with your finger, pen or mouse)</label>
+    <canvas class="pad" id="pad"></canvas>
+    <div class="row"><button type="button" id="clear">Clear</button></div>
+    <div class="check"><input type="checkbox" id="agree">
+      <label for="agree" style="margin:0;font-weight:400">I agree that this is my signature and that I am signing this document electronically.</label></div>
+    <div class="row"><button type="button" class="primary" id="sign" disabled>Sign the document</button>
+      <span class="error" id="signError"></span></div>
+  </div>
+
+  <div class="pages" id="pages"></div>
+</div>
+
+<script>
+  var REQUEST_ID = <?= requestId ?>;
+  var TOKEN = <?= token ?>;
+  var EMAIL = <?= email ?>;
+  var ERRORS = {
+    'not-found': 'This signing link is not valid. Ask the sender for a new one.',
+    'cancelled': 'The sender cancelled this signature request.',
+    'expired': 'This signing link has expired. Ask the sender for a new one.',
+    'already-signed': 'This document has already been signed.',
+    'no-email': 'Google did not share your email address. Sign in with your Google account and open the link again.',
+    'stale': 'The page was open too long. Reload it and try again.',
+    'bad-image': 'Please draw your signature in the box.',
+    'no-name': 'Please type your full name.',
+    'not-agreed': 'Please tick the box to agree.',
+    'bad-signature': 'The signing service could not check this page. Ask the sender to set up signing again.',
+    'service': 'The signing service did not answer. Try again in a minute.',
+    'server': 'Something went wrong on the signing service. Try again in a minute.'
+  };
+  function $(id) { return document.getElementById(id); }
+  function explain(res) {
+    if (res.error === 'wrong-account') {
+      return 'This link is for ' + res.expected + ', but you are signed in as ' + (res.email || 'another account') +
+             '. Switch to that Google account (top right of Google) and open the link again.';
+    }
+    return ERRORS[res.error] || ('Something went wrong (' + res.error + ').');
+  }
+  $('me').textContent = EMAIL || 'a Google account';
+
+  // ---- signature pad
+  var pad = $('pad'), ctx = pad.getContext('2d'), drawn = false, last = null, lastMid = null;
+  function sizePad() {
+    var r = pad.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    var keep = drawn ? pad.toDataURL() : null;
+    pad.width = Math.round(r.width * dpr); pad.height = Math.round(r.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111827';
+    if (keep) { var img = new Image(); img.onload = function () { ctx.drawImage(img, 0, 0, r.width, r.height); }; img.src = keep; }
+  }
+  function point(e) { var r = pad.getBoundingClientRect(); return {x: e.clientX - r.left, y: e.clientY - r.top, p: e.pressure || 0.5}; }
+  pad.addEventListener('pointerdown', function (e) { pad.setPointerCapture(e.pointerId); last = point(e); lastMid = last; });
+  pad.addEventListener('pointermove', function (e) {
+    if (!last) return;
+    var p = point(e), mid = {x: (last.x + p.x) / 2, y: (last.y + p.y) / 2};
+    ctx.lineWidth = 1.6 + 2.2 * (e.pointerType === 'pen' ? p.p : 0.6);
+    ctx.beginPath(); ctx.moveTo(lastMid.x, lastMid.y); ctx.quadraticCurveTo(last.x, last.y, mid.x, mid.y); ctx.stroke();
+    last = p; lastMid = mid; drawn = true; update();
+  });
+  function end() { last = null; }
+  pad.addEventListener('pointerup', end); pad.addEventListener('pointercancel', end); pad.addEventListener('pointerleave', end);
+  $('clear').onclick = function () { ctx.clearRect(0, 0, pad.width, pad.height); drawn = false; update(); };
+  function update() { $('sign').disabled = !(drawn && $('name').value.trim() && $('agree').checked); }
+  $('name').addEventListener('input', update); $('agree').addEventListener('change', update);
+  window.addEventListener('resize', sizePad);
+
+  function trimmedSignature() {
+    // crop to the ink so the signature fills the box on the document
+    var w = pad.width, h = pad.height, data = ctx.getImageData(0, 0, w, h).data;
+    var x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) if (data[(y * w + x) * 4 + 3] > 10) {
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    if (x1 < 0) return null;
+    var m = 6; x0 = Math.max(0, x0 - m); y0 = Math.max(0, y0 - m); x1 = Math.min(w - 1, x1 + m); y1 = Math.min(h - 1, y1 + m);
+    var out = document.createElement('canvas'); out.width = x1 - x0 + 1; out.height = y1 - y0 + 1;
+    out.getContext('2d').drawImage(pad, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
+    return out.toDataURL('image/png');
+  }
+
+  $('sign').onclick = function () {
+    var png = trimmedSignature();
+    if (!png) { $('signError').textContent = ERRORS['bad-image']; return; }
+    $('sign').disabled = true; $('signError').textContent = ''; $('sign').textContent = 'Signing…';
+    google.script.run.withSuccessHandler(function (res) {
+      if (res && res.ok) { showDone('Signed. Thank you!'); }
+      else { $('sign').textContent = 'Sign the document'; update(); $('signError').textContent = explain(res || {}); }
+    }).withFailureHandler(function (err) {
+      $('sign').textContent = 'Sign the document'; update(); $('signError').textContent = ERRORS.service;
+    }).signRequest(REQUEST_ID, TOKEN, $('name').value.trim(), png, $('agree').checked, navigator.userAgent);
+  };
+
+  function showDone(text) {
+    $('signCard').classList.add('hidden'); $('pages').innerHTML = '';
+    $('doneText').textContent = text; $('doneCard').classList.remove('hidden');
+  }
+
+  function show(res) {
+    if (!res || !res.ok) { $('title').textContent = 'Cannot open this signing link'; $('error').textContent = explain(res || {}); return; }
+    var req = res.request;
+    $('title').textContent = 'Please sign: ' + req.title;
+    $('sub').textContent = (req.requester ? req.requester + ' asked you to sign. ' : '') + 'Signed in as ' + (res.email || EMAIL);
+    $('message').textContent = req.message || '';
+    if (res.signed_at) { showDone('This document was signed on ' + new Date(res.signed_at).toLocaleString() + '.'); return; }
+    $('name').value = req.signer_name || '';
+    $('signCard').classList.remove('hidden'); sizePad(); update();
+    var holder = $('pages'), f = req.field;
+    res.pages.forEach(function (pg, i) {
+      var div = document.createElement('div'); div.className = 'page';
+      var img = document.createElement('img'); img.src = 'data:image/jpeg;base64,' + pg.img; img.alt = 'Page ' + (i + 1);
+      div.appendChild(img);
+      if (f && f.page === i) {
+        var box = document.createElement('div'); box.className = 'field'; box.textContent = 'Sign here';
+        box.style.left = (f.x * 100) + '%'; box.style.top = (f.y * 100) + '%';
+        box.style.width = (f.w * 100) + '%'; box.style.height = (f.h * 100) + '%';
+        box.onclick = function () { $('signCard').scrollIntoView({behavior: 'smooth'}); };
+        div.appendChild(box);
+      }
+      holder.appendChild(div);
+    });
+  }
+
+  if (!REQUEST_ID || !TOKEN) { show({ok: false, error: 'not-found'}); }
+  else {
+    google.script.run.withSuccessHandler(show).withFailureHandler(function () { show({ok: false, error: 'service'}); })
+      .loadRequest(REQUEST_ID, TOKEN);
+  }
+</script>
+</body>
+</html>
