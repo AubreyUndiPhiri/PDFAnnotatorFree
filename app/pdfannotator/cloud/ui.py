@@ -45,9 +45,11 @@ def friendly(exc):
     return f"{type(exc).__name__}: {exc}"
 
 
-def _link_button(text, url):
+def _link_button(text, url, tip=""):
     btn = QPushButton(text)
     btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+    if tip:
+        btn.setToolTip(f"<table width=440><tr><td>{tip}</td></tr></table>")   # rich text, wrapped
     return btn
 
 
@@ -144,7 +146,7 @@ class ConnectDialog(QDialog):
             label.setWordWrap(True)
             row.addWidget(label, 1)
             for caption, url in buttons:
-                row.addWidget(_link_button(caption, url))
+                row.addWidget(_link_button(caption, url, SETUP_TIPS.get(caption, "")))
             steps.addLayout(row)
         row = QHBoxLayout()
         row.addWidget(QLabel("<b>5.</b> Choose the downloaded file:"), 1)
@@ -634,8 +636,9 @@ class RequestSignatureDialog(QDialog):
             "The signer gets an email with a link. Only they can open it (a code is sent to their inbox). They "
             "sign on the document in their browser, and the signature is added to this PDF automatically."
             if self.mode == "service" else
-            "Aupedean makes a signing file to send by WhatsApp, email or any way you like. The signer opens it in "
-            "a web browser (no app or account needed), signs on the document and sends the signed PDF back."))
+            "Type the signer's email and press Send: Aupedean emails it to them, they sign in their web browser, "
+            "and the signature comes back into this PDF by itself. Or leave the email empty to make a signing file "
+            "to send by WhatsApp or any way you like."))
         body = QHBoxLayout()
         form = QFormLayout()
         s = _settings()
@@ -644,7 +647,7 @@ class RequestSignatureDialog(QDialog):
         self.my_email = QLineEdit(s.value("sign/my_email", ""))
         self.my_email.setPlaceholderText("you@example.com (the signer can email it back)")
         self.email = QLineEdit()
-        self.email.setPlaceholderText("signer@example.com" if needs_email else "Optional")
+        self.email.setPlaceholderText("signer@example.com" if needs_email else "Fill in to send it straight away")
         self.name = QLineEdit()
         self.name.setPlaceholderText("Optional")
         self.title = QLineEdit(title)
@@ -683,6 +686,9 @@ class RequestSignatureDialog(QDialog):
         ok = _primary({"google": "Create Signing Link", "service": "Send for Signature"}.get(self.mode,
                                                                                              "Create Signing File"))
         ok.clicked.connect(self.accept)
+        if self.mode == "file":   # with an email it goes straight to the signer
+            self.email.textChanged.connect(
+                lambda text: ok.setText("Send" if text.strip() else "Create Signing File"))
         layout.addLayout(_button_row(cancel, ok))
 
     def accept(self):
@@ -942,7 +948,61 @@ class SignAccountDialog(QDialog):
             self._send_code()
 
 
-HOSTED_REQUESTS_PER_DAY = 10     # per person, when the service is open to anyone
+SETUP_TIPS = {
+    "Cloudflare": (
+        "<b>Cloudflare account (free, no card)</b>"
+        "<ol>"
+        "<li>Click to open the sign-up page. Sign up with your email and a password.</li>"
+        "<li>Open the email Cloudflare sends and click <b>Verify email</b>. Workers only run for verified "
+        "accounts.</li>"
+        "<li>If asked to add a website or choose a plan, skip it: no domain is needed and the "
+        "<b>Free</b> plan is enough.</li>"
+        "<li>Aupedean creates the rest itself: the <i>aupedean-sign</i> Worker, its D1 database and a "
+        "<i>workers.dev</i> web address.</li>"
+        "</ol>"
+        "Free plan limits (100,000 requests a day) are far more than signing needs."),
+    "API Tokens": (
+        "<b>Cloudflare API token</b>"
+        "<ol>"
+        "<li>Click to open <b>My Profile &gt; API Tokens</b> (sign in if asked).</li>"
+        "<li>Click <b>Create Token</b>, scroll to <b>Create Custom Token</b> and click <b>Get started</b>.</li>"
+        "<li>Token name: <i>Aupedean Sign</i>.</li>"
+        "<li>Under <b>Permissions</b> add three rows (use <b>+ Add more</b>):"
+        "<br>&nbsp;&bull; Account &nbsp;|&nbsp; Workers Scripts &nbsp;|&nbsp; <b>Edit</b>"
+        "<br>&nbsp;&bull; Account &nbsp;|&nbsp; D1 &nbsp;|&nbsp; <b>Edit</b>"
+        "<br>&nbsp;&bull; Account &nbsp;|&nbsp; Account Settings &nbsp;|&nbsp; <b>Read</b></li>"
+        "<li><b>Account Resources</b>: Include &gt; your account (or All accounts).</li>"
+        "<li>Leave Client IP filtering empty and TTL unset.</li>"
+        "<li><b>Continue to summary</b> &gt; <b>Create Token</b>, then <b>copy the token</b> and paste it "
+        "below. Cloudflare shows it only once.</li>"
+        "</ol>"
+        "Not the <i>Global API Key</i>: a custom token can only do these three things."),
+    "Brevo": (
+        "<b>Brevo account (free, 300 emails a day, no card)</b>"
+        "<ol>"
+        "<li>Click to open the sign-up page. Sign up and confirm the email Brevo sends you.</li>"
+        "<li>Fill in the profile questions (name, company, address, phone). Brevo needs these before it "
+        "sends emails; a new account can take a short while to be activated.</li>"
+        "<li><b>The address emails come from</b>: your Brevo login email works. For better delivery, add "
+        "one under <b>Senders, Domains &amp; Dedicated IPs &gt; Senders &gt; Add a sender</b> and click the "
+        "link in the confirmation email. An address at your own domain (verified under <b>Domains</b>) "
+        "is best: emails sent as a Gmail address often land in spam.</li>"
+        "<li><b>Important</b>: under <b>Security &gt; Authorised IPs</b>, turn the IP check <b>off</b>. "
+        "The service runs on Cloudflare, whose IP addresses change, so Brevo would block it.</li>"
+        "</ol>"
+        "Put the sender address in <b>Emails come from</b> below."),
+    "API Keys": (
+        "<b>Brevo API key</b>"
+        "<ol>"
+        "<li>Click to open <b>SMTP &amp; API &gt; API Keys</b> (sign in if asked).</li>"
+        "<li>Click <b>Generate a new API key</b> and name it <i>Aupedean Sign</i>.</li>"
+        "<li><b>Copy the key</b> and paste it below. Brevo shows it only once.</li>"
+        "</ol>"
+        "It starts with <b>xkeysib-</b>. Not the <i>SMTP</i> key (xsmtpsib-), which can't be used here. "
+        "A key copied for MCP (a long code starting with eyJ) also works."),
+}
+
+HOSTED_REQUESTS_PER_DAY = 10    # per person, when the service is open to anyone
 HOSTED_EMAILS_PER_DAY = 280      # the whole service: inside Brevo's free 300 a day
 
 
@@ -973,7 +1033,7 @@ class ServiceSetupDialog(QDialog):
             label = QLabel(f"<b>{number}.</b> {text}")
             label.setWordWrap(True)
             row.addWidget(label, 1)
-            row.addWidget(_link_button(caption, url))
+            row.addWidget(_link_button(caption, url, SETUP_TIPS.get(caption, "")))
             layout.addLayout(row)
         form = QFormLayout()
         self.cf = QLineEdit()
@@ -1669,6 +1729,8 @@ class CloudController(QObject):
         if dlg.exec() != QDialog.Accepted:
             return
         v = dlg.values()
+        if v["signer_email"] and self._send_directly(tab, doc_bytes, v):
+            return
         QGuiApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             page_html, req = signing_file.make_signing_file(
@@ -1683,6 +1745,20 @@ class CloudController(QObject):
         self.signing.store.add(req)
         self.returns.update()
         SigningFileDialog(req.file_path, req, w).exec()
+
+    def _send_directly(self, tab, doc_bytes, v):
+        """Email the request to the signer from here (a quick request: they
+        sign from the link, and it comes back by itself). False when there's
+        no signature service to send it through: a signing file is made instead."""
+        if not sign_service.service_url():
+            QMessageBox.information(self.window, "Request Signature", "Sending straight from Aupedean needs the "
+                                    "signature service, which isn't set up yet. A signing file is made instead: "
+                                    "use Email It to send it.")
+            return False
+        if self._signed_in_client() is None:
+            return False
+        self._send_by_service(tab, doc_bytes, v, quick=True)
+        return True
 
     def add_returned(self):
         path, _ = QFileDialog.getOpenFileName(self.window, "Add a Signed Copy", os.path.expanduser("~/Downloads"),
