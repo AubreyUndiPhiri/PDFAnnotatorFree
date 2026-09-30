@@ -4,6 +4,7 @@ settings.
 
     python -m pytest tests/test_sign_install.py
 """
+import base64
 import http.server
 import json
 import os
@@ -39,6 +40,8 @@ class FakeApis:
                 path = self.path
                 fake.calls.append((method, path.split("?")[0]))
                 if path.startswith("/brevo/"):
+                    if self.headers.get("api-key") == "xkeysib-forbidden":
+                        return self._reply(403, {})
                     if self.headers.get("api-key") != "xkeysib-good":
                         return self._reply(401, {"message": "Key not found"})
                     if path == "/brevo/account":
@@ -111,6 +114,11 @@ def test_install(apis):
 def test_install_explains_bad_keys(apis):
     with pytest.raises(sign_service.SetupError, match="Brevo didn't accept"):
         sign_service.install("cf-good", "xkeysib-bad", "o@example.com", "o@example.com", wait_online=0)
+    with pytest.raises(sign_service.SetupError, match="isn't activated yet"):
+        sign_service.install("cf-good", "xkeysib-forbidden", "o@example.com", "o@example.com", wait_online=0)
+    mcp = base64.b64encode(b'{"api_key": "xkeysib-forbidden"}').decode()
+    with pytest.raises(sign_service.SetupError, match="made for MCP"):
+        sign_service.install("cf-good", mcp, "o@example.com", "o@example.com", wait_online=0)
     with pytest.raises(sign_service.SetupError, match="Workers Scripts > Edit"):
         sign_service.install("cf-bad", "xkeysib-good", "o@example.com", "owner@example.com", wait_online=0)
     with pytest.raises(sign_service.SetupError, match="isn't a verified sender"):

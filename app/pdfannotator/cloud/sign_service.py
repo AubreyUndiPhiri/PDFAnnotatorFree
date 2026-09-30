@@ -340,6 +340,7 @@ def normalize_brevo_key(api_key):
 
 def check_brevo(api_key):
     """(account email, [verified sender emails]) for a Brevo API key."""
+    for_mcp = not "".join(api_key.split()).startswith(("xkeysib-", "xsmtpsib-"))   # the eyJ... kind
     api_key = normalize_brevo_key(api_key)
     headers = {"api-key": api_key, "accept": "application/json"}
     try:
@@ -356,6 +357,17 @@ def check_brevo(api_key):
         if api_key.strip().startswith("xsmtpsib-"):
             raise SetupError("That's an SMTP key. Make an API key (it starts with xkeysib-) under "
                              "SMTP & API > API Keys." + detail, "https://app.brevo.com/settings/keys/api") from e
+        if e.status == 403 and for_mcp:
+            raise SetupError("Brevo knows that key but won't let it use its API: it was made for MCP (it starts "
+                             "with eyJ). Under SMTP & API > API Keys, click Generate a new API key, leave the MCP "
+                             "option off, and paste the key that starts with xkeysib-." + detail,
+                             "https://app.brevo.com/settings/keys/api") from e
+        if e.status == 403:
+            raise SetupError("Brevo knows that key but won't let it use its API. Usually the Brevo account isn't "
+                             "activated yet: complete your profile (name, company, address, phone) in Brevo, and "
+                             "check your inbox for a message from Brevo asking for more details. If the key was "
+                             "made with the MCP option on, make a new one with it off." + detail,
+                             "https://app.brevo.com/account/profile") from e
         raise SetupError("Brevo didn't accept that API key. Make a new one under SMTP & API > API Keys." + detail,
                          "https://app.brevo.com/settings/keys/api") from e
     return account.get("email", "").lower(), senders
@@ -365,9 +377,9 @@ def install(cf_token, brevo_key, owner_email, sender_email, allow="", sender_nam
             progress=lambda text: None, wait_online=120, requests_per_day=0, emails_per_day=0):
     """Create (or update) the service in the Cloudflare account and return its address."""
     owner_email, sender_email = owner_email.strip().lower(), sender_email.strip().lower()
-    brevo_key = normalize_brevo_key(brevo_key)
     progress("Checking the Brevo account...")
-    _account, senders = check_brevo(brevo_key)
+    _account, senders = check_brevo(brevo_key)        # as pasted: it tells an MCP key apart
+    brevo_key = normalize_brevo_key(brevo_key)
     if senders and sender_email not in senders:
         raise SetupError(f"{sender_email} isn't a verified sender in Brevo. Add it under Senders, Domains & "
                          "Dedicated IPs > Senders (Brevo emails you a confirmation), or use one listed there: "

@@ -996,10 +996,11 @@ SETUP_TIPS = {
         "<ol>"
         "<li>Click to open <b>SMTP &amp; API &gt; API Keys</b> (sign in if asked).</li>"
         "<li>Click <b>Generate a new API key</b> and name it <i>Aupedean Sign</i>.</li>"
+        "<li>Leave the <b>MCP</b> option <b>off</b>: a key made for MCP (a long code starting with eyJ) "
+        "is refused by Brevo's API.</li>"
         "<li><b>Copy the key</b> and paste it below. Brevo shows it only once.</li>"
         "</ol>"
-        "It starts with <b>xkeysib-</b>. Not the <i>SMTP</i> key (xsmtpsib-), which can't be used here. "
-        "A key copied for MCP (a long code starting with eyJ) also works."),
+        "It starts with <b>xkeysib-</b>. Not the <i>SMTP</i> key (xsmtpsib-), which can't be used here."),
 }
 
 HOSTED_REQUESTS_PER_DAY = 10    # per person, when the service is open to anyone
