@@ -260,6 +260,29 @@ def custom_font_path(name: str) -> str | None:
     return info["path"] if info else None
 
 
+BASE14_VARIANTS = {   # (bold, italic) -> PDF base-14 font, per family
+    "helv": {(False, False): "helv", (True, False): "hebo", (False, True): "heit", (True, True): "hebi"},
+    "tiro": {(False, False): "tiro", (True, False): "tibo", (False, True): "tiit", (True, True): "tibi"},
+    "cour": {(False, False): "cour", (True, False): "cobo", (False, True): "coit", (True, True): "cobi"},
+}
+
+
+def style_variant(name: str, bold: bool, italic: bool) -> str | None:
+    """The installed font of `name`'s family with that weight and slant
+    (e.g. "Lora" -> "Lora Bold Italic"), or None when there isn't one."""
+    info = _info(name)
+    if info is None:
+        return None
+    want = (bool(bold) or info["bold"], bool(italic) or info["italic"])
+    if (info["bold"], info["italic"]) == want:
+        return name
+    for group in (_library_fonts, _system_fonts, _custom_fonts):
+        for other, o in group.items():
+            if o["family"] == info["family"] and (o["bold"], o["italic"]) == want:
+                return other
+    return None
+
+
 def is_custom_font(name: str) -> bool:
     """True for every font that is embedded (handwriting and system fonts)."""
     return _info(name) is not None

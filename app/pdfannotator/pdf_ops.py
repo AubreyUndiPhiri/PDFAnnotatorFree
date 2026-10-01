@@ -245,9 +245,232 @@ def wrap_text(text, fontsize, fontname, width=None):
     return lines or [""]
 
 
-def text_box_size(text, fontsize, fontname, width=None):
+# ---------------------------------------------------------------------------
+# Rich text in text boxes: bold, italic, underline, strikethrough,
+# superscript and subscript on any part of the text. The box keeps its
+# plain text in /Contents (what other apps edit) and the formatting as
+# runs in RICH_KEY; its appearance is drawn here run by run (real bold /
+# italic fonts where they exist, synthesised otherwise).
+# ---------------------------------------------------------------------------
+
+RICH_KEY = "AupRich"
+RUN_FLAGS = ("b", "i", "u", "s", "v")      # bold, italic, underline, strike, v: 1 super / -1 sub
+SCRIPT_SCALE, SUPER_RISE, SUB_DROP = 0.62, 0.36, 0.14   # sizes and shifts, in font sizes
+_BASE14_NAMES = {"helv": "Helvetica", "hebo": "Helvetica-Bold", "heit": "Helvetica-Oblique",
+                 "hebi": "Helvetica-BoldOblique", "tiro": "Times-Roman", "tibo": "Times-Bold",
+                 "tiit": "Times-Italic", "tibi": "Times-BoldItalic", "cour": "Courier", "cobo": "Courier-Bold",
+                 "coit": "Courier-Oblique", "cobi": "Courier-BoldOblique"}
+
+
+def runs_text(runs):
+    return "".join(r["t"] for r in runs)
+
+
+def runs_formatted(runs) -> bool:
+    return bool(runs) and any(r.get(k) for r in runs for k in RUN_FLAGS)
+
+
+def normalize_runs(runs):
+    """Drop empty runs, merge neighbours with the same style, keep only set flags."""
+    out = []
+    for r in runs or []:
+        if not r.get("t"):
+            continue
+        style = {k: r[k] for k in RUN_FLAGS if r.get(k)}
+        if out and {k: out[-1][k] for k in RUN_FLAGS if out[-1].get(k)} == style:
+            out[-1]["t"] += r["t"]
+        else:
+            out.append({"t": r["t"], **style})
+    return out
+
+
+def rstrip_runs(runs):
+    runs = [dict(r) for r in normalize_runs(runs)]
+    while runs:
+        runs[-1]["t"] = runs[-1]["t"].rstrip()
+        if runs[-1]["t"]:
+            break
+        runs.pop()
+    return runs
+
+
+def rich_runs(annot):
+    """The formatted runs of a text box, or None for plain text."""
+    kind, value = annot.parent.parent.xref_get_key(annot.xref, RICH_KEY)
+    if kind != "string" or not value:
+        return None
+    try:
+        runs = json.loads(value)
+    except ValueError:
+        return None
+    return runs if runs_formatted(runs) else None
+
+
+def _store_runs(doc, xref, runs):
+    runs = normalize_runs(runs)
+    doc.xref_set_key(xref, RICH_KEY, fitz.get_pdf_str(json.dumps(runs)) if runs_formatted(runs) else "null")
+
+
+def _run_size(size, run):
+    return size * SCRIPT_SCALE if run.get("v") else size
+
+
+def _run_font(fontname, bold, italic):
+    """How to draw a run: a base-14 font (real bold / italic variants), or a
+    font file (its bold / italic sibling if installed, else drawn bolder /
+    slanted)."""
+    if not fonts.is_custom_font(fontname):
+        family = fonts.BASE14_FONTS.get(fontname, "helv")
+        return {"code": fonts.BASE14_VARIANTS[family][(bool(bold), bool(italic))], "fake_bold": False,
+                "fake_italic": False}
+    for b, i in ((bold, italic), (bold, False), (False, italic), (False, False)):
+        variant = fonts.style_variant(fontname, b, i)
+        if variant and fonts.custom_font_path(variant):
+            return {"name": variant, "path": fonts.custom_font_path(variant),
+                    "fake_bold": bool(bold) and not b, "fake_italic": bool(italic) and not i}
+    return {"name": fontname, "path": fonts.custom_font_path(fontname), "fake_bold": bool(bold),
+            "fake_italic": bool(italic)}
+
+
+@lru_cache(maxsize=None)
+def _base14_file(code):
+    """The font file behind a base-14 font, for characters its encoding lacks."""
+    return fitz.Font(code)
+
+
+def _run_width(text, size, fontname, run):
+    f = _run_font(fontname, run.get("b"), run.get("i"))
+    s = _run_size(size, run)
+    if "code" in f:
+        if any(ord(ch) > 255 for ch in text):   # drawn with the embedded font file: measure that
+            return _base14_file(f["code"]).text_length(text, fontsize=s)
+        return fitz.get_text_length(text, fontname=f["code"], fontsize=s)
+    return _font_file(f["path"]).text_length(text, fontsize=s)
+
+
+def rich_layout(runs, size, fontname, width=None):
+    """Lines of [(text, run, width)] and each line's width, wrapping words
+    (which may mix styles, like x²) at `width`."""
+    import re
+
+    words = []    # ("nl",) | ("sp", [(text, run)]) | ("w", [(text, run), ...])
+    for run in normalize_runs(runs):
+        for k, part in enumerate(run["t"].split("\n")):
+            if k:
+                words.append(("nl",))
+            for piece in re.split(r"( +)", part):
+                if not piece:
+                    continue
+                kind = "sp" if piece[0] == " " else "w"
+                if words and words[-1][0] == kind == "w":
+                    words[-1][1].append((piece, run))
+                else:
+                    words.append((kind, [(piece, run)]))
+    lines, line, line_w, spaces = [], [], 0.0, []
+    for item in words:
+        if item[0] == "nl":
+            lines.append((line, line_w))
+            line, line_w, spaces = [], 0.0, []
+            continue
+        segs = [(t, r, _run_width(t, size, fontname, r)) for t, r in item[1]]
+        if item[0] == "sp":
+            spaces.extend(segs)
+            continue
+        word_w = sum(s[2] for s in segs)
+        space_w = sum(s[2] for s in spaces)
+        if width is not None and line and line_w + space_w + word_w > width:
+            lines.append((line, line_w))
+            line, line_w = [], 0.0
+        elif line:
+            line.extend(spaces)
+            line_w += space_w
+        spaces = []
+        line.extend(segs)
+        line_w += word_w
+    lines.append((line, line_w))
+    return lines
+
+
+def _draw_rich(annot, style, runs):
+    """The box's appearance drawn run by run (see the section notes)."""
+    doc = annot.parent.parent
+    size, fontname, color, align = style["fontsize"], style["fontname"], style["color"], style["align"]
+    rect = annot.rect
+    w, h = max(rect.width, 1), max(rect.height, 1)
+    scratch = fitz.open()
+    sp = scratch.new_page(width=w, height=h)
+    resources = {}        # resource name -> font object xref (in the real document)
+    file_fonts = {}       # font path -> resource name
+    chars = "".join(sorted(set(runs_text(runs).replace("\n", ""))))
+    for i, (segs, line_w) in enumerate(rich_layout(runs, size, fontname, w)):
+        baseline = FIRST_BASELINE * size + i * LINE_HEIGHT * size
+        x = {1: (w - line_w) / 2, 2: w - line_w}.get(align, 0)
+        for text, run, seg_w in segs:
+            s = _run_size(size, run)
+            y = baseline - SUPER_RISE * size if run.get("v") == 1 else \
+                baseline + SUB_DROP * size if run.get("v") == -1 else baseline
+            f = _run_font(fontname, run.get("b"), run.get("i"))
+            if text.strip():
+                if "code" in f and any(ord(ch) > 255 for ch in text):
+                    # beyond the base-14 encoding (dashes, curly quotes, ...): embed the font itself
+                    ref = file_fonts.get(f["code"])
+                    if ref is None:
+                        ref = f"B-{f['code']}"
+                        data = _base14_file(f["code"]).buffer
+                        sp.insert_font(fontname=ref, fontbuffer=data)
+                        resources[ref] = _embed_font(annot.parent, ref, data)
+                        file_fonts[f["code"]] = ref
+                elif "code" in f:
+                    ref = f["code"]
+                    if ref not in resources:
+                        xref = doc.get_new_xref()
+                        doc.update_object(xref, f"<</Type/Font/Subtype/Type1/BaseFont/{_BASE14_NAMES[ref]}"
+                                                "/Encoding/WinAnsiEncoding>>")
+                        resources[ref] = xref
+                else:
+                    ref = file_fonts.get(f["path"])
+                    if ref is None:
+                        try:
+                            data = _subset_font(f["path"], chars)
+                        except Exception:
+                            with open(f["path"], "rb") as fh:
+                                data = fh.read()
+                        ref = f"{fonts.pdf_font_ref(f['name'])}-{zlib.crc32(data) & 0xFFFFFF:06X}"
+                        sp.insert_font(fontname=ref, fontbuffer=data)
+                        resources[ref] = _embed_font(annot.parent, ref, data)
+                        file_fonts[f["path"]] = ref
+                extra = {}
+                if f["fake_bold"]:
+                    extra.update(render_mode=2, border_width=0.035)
+                if f["fake_italic"]:
+                    extra["morph"] = (fitz.Point(x, y), fitz.Matrix(1, 0, 0.2, 1, 0, 0))
+                sp.insert_text((x, y), text, fontname=ref, fontsize=s, color=color, **extra)
+            thick = max(0.5, s * 0.06)
+            if run.get("u"):
+                sp.draw_line((x, y + 0.13 * s), (x + seg_w, y + 0.13 * s), color=color, width=thick)
+            if run.get("s"):
+                sp.draw_line((x, y - 0.3 * s), (x + seg_w, y - 0.3 * s), color=color, width=thick)
+            x += seg_w
+    content = sp.read_contents()
+    kind, ap = doc.xref_get_key(annot.xref, "AP/N")
+    xobj = int(ap.split()[0]) if kind == "xref" else doc.get_new_xref()
+    font_dict = "".join(f"/{ref} {xref} 0 R" for ref, xref in resources.items())
+    doc.update_object(xobj, f"<</Type/XObject/Subtype/Form/BBox[0 0 {w:g} {h:g}]"
+                            f"/Resources<</Font<<{font_dict}>>>>>>")
+    doc.update_stream(xobj, content)
+    doc.xref_set_key(annot.xref, "AP", f"<</N {xobj} 0 R>>")
+    return True
+
+
+def text_box_size(text, fontsize, fontname, width=None, runs=None):
     """(width, height) in points of a box that fits `text`. With width=None
-    the box grows to the longest line; otherwise lines wrap at `width`."""
+    the box grows to the longest line; otherwise lines wrap at `width`.
+    Formatted `runs` (bold is wider, scripts are smaller) are measured as drawn."""
+    if runs_formatted(runs):
+        lines = rich_layout(runs, fontsize, fontname, width)
+        if width is None:
+            width = max(lw for _l, lw in lines) + TEXT_SLACK
+        return max(width, fontsize), max(1, len(lines)) * LINE_HEIGHT * fontsize
     lines = wrap_text(text, fontsize, fontname, width)
     if width is None:
         measure = _measurer(fontname)
@@ -255,18 +478,21 @@ def text_box_size(text, fontsize, fontname, width=None):
     return max(width, fontsize), max(1, len(lines)) * LINE_HEIGHT * fontsize
 
 
-def add_text_box(page, origin, text, color, fontsize=12, fontname=fonts.DEFAULT_FONT, align=0, width=None):
+def add_text_box(page, origin, text, color, fontsize=12, fontname=fonts.DEFAULT_FONT, align=0, width=None,
+                 runs=None):
     """Text box with its top-left corner at `origin`, sized to fit the text."""
-    w, h = text_box_size(text, fontsize, fontname, width)
+    w, h = text_box_size(text, fontsize, fontname, width, runs)
     rect = fitz.Rect(origin.x, origin.y, origin.x + w, origin.y + h)
-    annot = add_freetext(page, rect, text, color, fontsize, fontname, align)
+    annot = add_freetext(page, rect, text, color, fontsize, fontname, align, runs=runs)
     if width is not None:
         page.parent.xref_set_key(annot.xref, FIXED_WIDTH_KEY, "true")
     return annot
 
 
-def add_freetext(page: fitz.Page, rect, text, color, fontsize=12, fontname=fonts.DEFAULT_FONT, align=0) -> fitz.Annot:
-    """FreeText annotation in the chosen font. align: 0 left, 1 centre, 2 right."""
+def add_freetext(page: fitz.Page, rect, text, color, fontsize=12, fontname=fonts.DEFAULT_FONT, align=0,
+                 runs=None) -> fitz.Annot:
+    """FreeText annotation in the chosen font. align: 0 left, 1 centre, 2 right.
+    `runs` carry bold / italic / ... formatting (see rich text below)."""
     annot = page.add_freetext_annot(
         rect, text, fontsize=fontsize, fontname=fonts.BASE14_FONTS.get(fontname, "helv"),
         text_color=color_to_rgb(color), align=align,
@@ -274,7 +500,9 @@ def add_freetext(page: fitz.Page, rect, text, color, fontsize=12, fontname=fonts
     annot.update()
     if fonts.is_custom_font(fontname):
         page.parent.xref_set_key(annot.xref, CUSTOM_FONT_KEY, fitz.get_pdf_str(fontname))
-        _apply_custom_appearance(annot)
+    if runs is not None:
+        _store_runs(page.parent, annot.xref, runs)
+    _apply_custom_appearance(annot)
     return annot
 
 
@@ -303,12 +531,16 @@ def freetext_style(annot) -> dict:
     if kind == "int":
         style["align"] = int(q)
     style["fixed_width"] = doc.xref_get_key(annot.xref, FIXED_WIDTH_KEY)[1] == "true"
+    style["runs"] = rich_runs(annot)
     return style
 
 
-def set_freetext(annot, text, color, fontsize, fontname, rect, align=None, fixed_width=None):
-    """Rewrite an existing text box's text, style and rect in place."""
+def set_freetext(annot, text, color, fontsize, fontname, rect, align=None, fixed_width=None, runs=None):
+    """Rewrite an existing text box's text, style and rect in place (its
+    formatting too when `runs` is given; otherwise it is kept)."""
     doc = annot.parent.parent
+    if runs is not None:
+        _store_runs(doc, annot.xref, runs)
     if align is not None:
         doc.xref_set_key(annot.xref, "Q", str(int(align)))
     if fixed_width is not None:
@@ -365,6 +597,10 @@ def _apply_custom_appearance(annot):
     boxes, and for custom boxes whose font file is not installed (the saved
     appearance is then kept until the box is changed)."""
     doc = annot.parent.parent
+    if is_text_box(annot):
+        runs = rich_runs(annot)
+        if runs:
+            return _draw_rich(annot, freetext_style(annot), runs)
     kind, fontname = doc.xref_get_key(annot.xref, CUSTOM_FONT_KEY)
     if kind != "string" or not fontname:
         return False
@@ -424,7 +660,7 @@ def resize_annot(annot, rect):
     rect = fitz.Rect(rect).normalize()
     if is_text_box(annot):
         style = freetext_style(annot)
-        _w, need_h = text_box_size(style["text"], style["fontsize"], style["fontname"], rect.width)
+        _w, need_h = text_box_size(style["text"], style["fontsize"], style["fontname"], rect.width, style["runs"])
         rect.y1 = max(rect.y1, rect.y0 + need_h)
         set_freetext(annot, style["text"], QColor.fromRgbF(*style["color"]), style["fontsize"],
                      style["fontname"], rect, fixed_width=True)
@@ -832,7 +1068,7 @@ def deserialize_and_add(page: fitz.Page, data: dict, offset=(0.0, 0.0), override
         style = data.get("text_style") or {}
         color = override_color if override_color is not None else style.get("color", (0, 0, 0))
         annot = add_freetext(page, rect, data["content"], QColor.fromRgbF(*color), style.get("fontsize", 12),
-                             style.get("fontname", fonts.DEFAULT_FONT), style.get("align", 0))
+                             style.get("fontname", fonts.DEFAULT_FONT), style.get("align", 0), runs=style.get("runs"))
         if style.get("fixed_width"):
             page.parent.xref_set_key(annot.xref, FIXED_WIDTH_KEY, "true")
         return annot

@@ -13,7 +13,7 @@ from .document import PDFDocument
 from .page_widget import PageWidget
 from .thumbnail_panel import ThumbnailPanel
 from .guide_overlay import GuideLine, LaserDot
-from .inline_text import InlineTextEditor
+from .inline_text import FormatBar, InlineTextEditor
 from .formula_editor import FormulaEditor
 from . import handles
 from .tools import Tool, TOOL_HINTS, UNITS
@@ -956,12 +956,12 @@ class DocumentTab(QWidget):
         """Open the on-page editor: a new box at `origin_pdf` (wrapping at
         `width_pt` if the box was dragged out), or the existing box `annot`."""
         self.finish_text_editing()
-        text, align, flags, original = "", 0, None, None
+        text, align, flags, original, runs = "", self.window.text_align, None, None, None
         if annot is not None:
             style = pdf_ops.freetext_style(annot)
             origin_pdf = fitz.Point(annot.rect.x0, annot.rect.y0)
             width_pt = annot.rect.width if style["fixed_width"] else None
-            text, align = style["text"], style["align"]
+            text, align, runs = style["text"], style["align"], style["runs"]
             if self.current_tool not in self.TEXT_TOOLS:
                 self.window.set_tool(Tool.TEXTBOX)
             # The toolbar shows, and live-edits, the style of the box being edited
@@ -971,7 +971,8 @@ class DocumentTab(QWidget):
             tool_style["fontsize"] = int(round(style["fontsize"]))
             tool_style["color"] = tuple(round(c * 255) for c in style["color"])
             self.window._refresh_style_controls()
-            original = (text, tool_style["fontname"], float(tool_style["fontsize"]), QColor.fromRgbF(*style["color"]).name())
+            original = (text, tool_style["fontname"], float(tool_style["fontsize"]), QColor.fromRgbF(*style["color"]).name(),
+                        pdf_ops.normalize_runs(runs or [{"t": text}]), align)
             # Hide the saved box while its live copy is being edited
             flags = annot.flags
             self.document.doc.xref_set_key(annot.xref, "F", str(flags | fitz.PDF_ANNOT_IS_HIDDEN))
@@ -982,13 +983,20 @@ class DocumentTab(QWidget):
         editor = InlineTextEditor(
             widget, QPoint(round(origin_px.x()), round(origin_px.y())), scale,
             self.current_fontname, self.current_fontsize, self.current_color,
-            fixed_width_px=width_pt * scale if width_pt else None, text=text,
+            fixed_width_px=width_pt * scale if width_pt else None, text=text, runs=runs, align=align,
         )
         editor.finished.connect(self.finish_text_editing)
+        if annot is None:
+            for kind in self.window.pending_text_formats():   # B / I / ... switched on before typing
+                editor.toggle(kind)
+        editor.currentCharFormatChanged.connect(lambda _f: self.window.sync_text_format(editor))
+        self.window.sync_text_format(editor)
+        format_bar = FormatBar(widget, self.window.text_format_actions, editor)
         editor.show()
         editor.setFocus()
         self.text_edit = {"widget": widget, "editor": editor, "origin": fitz.Point(origin_pdf), "width": width_pt,
-                          "annot": annot, "align": align, "flags": flags, "original": original}
+                          "annot": annot, "align": align, "flags": flags, "original": original,
+                          "format_bar": format_bar}
         self.set_hint("Type your text. Press Esc or click outside the box to finish.")
 
     def begin_formula_edit(self, widget, origin_pdf=None, annot=None):
@@ -1088,6 +1096,47 @@ class DocumentTab(QWidget):
         widget.update()
         return annot
 
+    def format_text(self, kind):
+        """A Bold / Italic / ... / align button: on the text being typed, else
+        on the whole of each selected text box. Returns False when there is
+        neither (the button then just remembers it for the next box)."""
+        if self.text_edit is not None and self.text_edit.get("kind") != "formula":
+            editor = self.text_edit["editor"]
+            if kind.startswith("align"):
+                editor.set_alignment(int(kind[-1]))
+            else:
+                editor.toggle(kind)
+            editor.setFocus()
+            return True
+        boxes = [(i, a) for i, a in self.selected if pdf_ops.is_text_box(a)]
+        if not boxes:
+            return False
+        flag = {"sup": ("v", 1), "sub": ("v", -1)}.get(kind, (kind, 1))
+        for page_index, annot in boxes:
+            style = pdf_ops.freetext_style(annot)
+            align = style["align"]
+            runs = [dict(r) for r in (style["runs"] or [{"t": style["text"]}])]
+            if kind.startswith("align"):
+                align = int(kind[-1])
+            else:
+                key, value = flag
+                on = not all(r.get(key) == value for r in runs if r["t"].strip())
+                for r in runs:
+                    if on:
+                        r[key] = value
+                    else:
+                        r.pop(key, None)
+            o = annot.rect
+            width = o.width if style["fixed_width"] else None
+            w, h = pdf_ops.text_box_size(style["text"], style["fontsize"], style["fontname"], width, runs)
+            pdf_ops.set_freetext(annot, style["text"], QColor.fromRgbF(*style["color"]), style["fontsize"],
+                                 style["fontname"], fitz.Rect(o.x0, o.y0, o.x0 + w, o.y0 + h), align=align, runs=runs)
+        self.document.snapshot()
+        for page_index in {i for i, _a in boxes}:
+            self.get_page_widget(page_index).render()
+            self.refresh_thumbnail(page_index)
+        return True
+
     def update_text_edit_style(self):
         """Toolbar font/size/colour changed: restyle the box being typed in."""
         if self.text_edit is None:
@@ -1106,10 +1155,14 @@ class DocumentTab(QWidget):
         if state.get("kind") == "formula":
             return self._finish_formula(state, accept)
         editor, widget, annot = state["editor"], state["widget"], state["annot"]
-        text = editor.toPlainText().rstrip()
+        runs = pdf_ops.rstrip_runs(editor.runs())
+        text = pdf_ops.runs_text(runs)
+        align = editor.align
         fontname, fontsize, color = editor.fontname, editor.fontsize, editor.color
         editor.hide()
         editor.deleteLater()
+        state["format_bar"].hide()
+        state["format_bar"].deleteLater()
         page = widget.page()
         if annot is not None:
             self.document.doc.xref_set_key(annot.xref, "F", str(state["flags"]))
@@ -1120,16 +1173,16 @@ class DocumentTab(QWidget):
                 page.delete_annot(annot)
                 annot = None
             elif annot is not None:
-                if state["original"] == (text, fontname, fontsize, color.name()):
+                if state["original"] == (text, fontname, fontsize, color.name(), runs, align):
                     changed = False
                 else:
-                    w, h = pdf_ops.text_box_size(text, fontsize, fontname, state["width"])
+                    w, h = pdf_ops.text_box_size(text, fontsize, fontname, state["width"], runs)
                     o = state["origin"]
                     pdf_ops.set_freetext(annot, text, color, fontsize, fontname,
-                                         fitz.Rect(o.x, o.y, o.x + w, o.y + h), align=state["align"])
+                                         fitz.Rect(o.x, o.y, o.x + w, o.y + h), align=align, runs=runs)
             elif text.strip():
-                annot = pdf_ops.add_text_box(page, state["origin"], text, color, fontsize, fontname,
-                                             width=state["width"])
+                annot = pdf_ops.add_text_box(page, state["origin"], text, color, fontsize, fontname, align=align,
+                                             width=state["width"], runs=runs)
             else:
                 widget.render()
                 self.set_hint(TOOL_HINTS.get(self.current_tool, ""))

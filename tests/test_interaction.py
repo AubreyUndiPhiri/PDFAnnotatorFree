@@ -155,3 +155,64 @@ def test_copy_paste_keeps_the_picture(window):
     tab.paste()
     pictures = [a for a in widget.page().annots() if pdf_ops.is_image_stamp(a)]
     assert len(pictures) == 2
+
+
+# ---- rich text in text boxes
+def _type_box(w, tab, steps):
+    from pdfannotator.tools import Tool as _Tool
+
+    w.set_tool(_Tool.TEXTBOX)
+    tab.begin_text_edit(tab.page_widgets[0], origin_pdf=fitz.Point(60, 400))
+    editor = tab.text_edit["editor"]
+    for step in steps:
+        if step.startswith("!"):
+            w.text_format_actions[step[1:]].trigger()
+        else:
+            editor.insertPlainText(step)
+    return tab.finish_text_editing()
+
+
+def test_text_formatting_buttons_while_typing(window):
+    w, tab = window
+    annot = _type_box(w, tab, ["H", "!sub", "2", "!sub", "O is ", "!b", "bold", "!b", " and x", "!sup", "2", "!sup"])
+    runs = pdf_ops.rich_runs(annot)
+    assert {"t": "2", "v": -1} in runs and {"t": "bold", "b": 1} in runs and {"t": "2", "v": 1} in runs
+    assert annot.info["content"] == "H2O is bold and x2"          # other apps still get the words
+
+
+def test_formatting_a_selected_box_and_keyboard_shortcuts(window, app):
+    from PySide6.QtGui import QKeyEvent
+
+    w, tab = window
+    annot = _type_box(w, tab, ["plain words"])
+    assert pdf_ops.rich_runs(annot) is None
+    tab.selected = [(0, annot)]
+    assert tab.format_text("i") and tab.format_text("u")
+    box = next(a for a in tab.page_widgets[0].page().annots() if a.xref == annot.xref)
+    assert pdf_ops.rich_runs(box) == [{"t": "plain words", "i": 1, "u": 1}]
+    tab.format_text("align1")
+    assert pdf_ops.freetext_style(box)["align"] == 1
+    # Ctrl+B while typing
+    tab.begin_text_edit(tab.page_widgets[0], annot=box)
+    editor = tab.text_edit["editor"]
+    editor.selectAll()
+    editor.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_B, Qt.ControlModifier))
+    box = tab.finish_text_editing()
+    assert all(r.get("b") for r in pdf_ops.rich_runs(box))
+
+
+def test_formatting_survives_save_copy_and_odd_characters(window, tmp_path):
+    w, tab = window
+    annot = _type_box(w, tab, ["Price — ", "!b", "€5", "!b"])
+    tab.selected = [(0, annot)]
+    tab.copy_selected()
+    tab.paste()
+    page = tab.page_widgets[0].page()
+    formatted = [a for a in page.annots() if pdf_ops.is_text_box(a) and pdf_ops.rich_runs(a)]
+    assert len(formatted) == 2
+    out = tmp_path / "rich.pdf"
+    tab.document.doc.save(out)
+    reopened = fitz.open(out)
+    text = reopened[0].get_text()
+    assert "—" in text and "€5" in text                           # drawn with real glyphs
+    assert any(pdf_ops.rich_runs(a) for a in reopened[0].annots() if pdf_ops.is_text_box(a))

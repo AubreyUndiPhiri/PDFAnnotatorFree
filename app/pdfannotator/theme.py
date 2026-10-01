@@ -223,7 +223,7 @@ QMenu::separator {{ height: 1px; background: {BORDER}; margin: 5px 6px; }}
 /* ---- toolbars: floating glass / clay bars */
 QToolBar {{ background: {s['panel']}; {panel_edges} border-radius: {br}px; margin: 3px 8px 1px 8px;
     padding: 2px 6px; spacing: 2px; }}
-QToolBar::separator {{ background: {BORDER}; width: 1px; margin: 7px 6px; }}
+QToolBar::separator {{ background: {BORDER}; width: 1px; margin: 7px 4px; }}
 QToolButton {{ background: transparent; border: 1px solid transparent; border-radius: {r}px; padding: 3px; color: {TEXT}; }}
 QToolButton:hover {{ background: {s['raised_hover']}; {raised_edges} }}
 QToolButton:pressed {{ background: {s['pressed']}; {pressed_edges} }}
@@ -236,6 +236,8 @@ QToolButton::menu-indicator {{ image: url({down_small}); subcontrol-origin: padd
     subcontrol-position: center right; right: 4px; width: 10px; height: 10px; }}
 QToolButton#ribbonToggle {{ margin: 2px 10px 0 4px; padding: 4px; }}
 QFrame#penPanel {{ background: {s['panel']}; {panel_edges} border-radius: {br}px; }}
+QFrame#formatBar {{ background: {s['popup']}; {panel_edges} border-radius: {r + 2}px; }}
+QFrame#formatBar QFrame#penRule {{ background: {BORDER}; border: none; }}
 QFrame#penPanel QFrame#penRule {{ background: {BORDER}; border: none; }}
 QToolButton#penSwatch {{ border: 2px solid transparent; border-radius: 12px; padding: 1px; }}
 QToolButton#penSwatch:hover {{ border-color: {ACCENT_SOFT_BORDER}; background: transparent; }}
@@ -397,7 +399,7 @@ class _RoundedPopups(QObject):
 _popups = _RoundedPopups()
 
 # The floating bars that get a real soft shadow in light mode
-_SHADOW_NAMES = {"commandBar", "toolBar", "editorBar", "penPanel"}
+_SHADOW_NAMES = {"commandBar", "toolBar", "editorBar", "penPanel", "formatBar"}
 
 
 def _wants_shadow(widget):

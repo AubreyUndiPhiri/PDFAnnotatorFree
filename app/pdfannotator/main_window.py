@@ -335,6 +335,7 @@ class MainWindow(QMainWindow):
                                   tip="Pen strokes get thicker and thinner: with a pen tablet or stylus from "
                                       "how hard you press, with a mouse from how fast you draw")
         self.act_pressure_ink.setChecked(self.ink_pressure)
+        self._create_text_format_actions()
         self.ribbon_shown = settings.value("ui/ribbon", "true") == "true"
         self.act_ribbon = a("Show Ribbon", self._set_ribbon_shown, None, "Ctrl+F1", checkable=True,
                             tip="Show or hide the toolbars at the top")
@@ -343,6 +344,61 @@ class MainWindow(QMainWindow):
         self.act_dark = a("Dark Mode", self.toggle_dark_mode, "moon", "Ctrl+Shift+D", checkable=True,
                           tip="Switch between the light (glass) and dark (clay) look")
         self.act_dark.setChecked(theme.mode == theme.DARK)
+
+    TEXT_FORMATS = (("b", "Bold", "bold", "Ctrl+B"), ("i", "Italic", "italic", "Ctrl+I"),
+                    ("u", "Underline", "text-underline", "Ctrl+U"), ("s", "Strikethrough", "strikeout", ""),
+                    ("sup", "Superscript", "superscript", "Ctrl+Shift+="), ("sub", "Subscript", "subscript", "Ctrl+="))
+
+    def _create_text_format_actions(self):
+        """Bold, italic, underline, strikethrough, superscript, subscript and
+        alignment for the Text tool. Unlike other actions they don't end the
+        typing: they format the selected text (or what is typed next), or the
+        whole of each selected text box."""
+        self.text_format_actions = {}
+        for kind, label, icon, keys in self.TEXT_FORMATS:
+            act = QAction(icons.icon(icon), label, self)
+            act.setCheckable(True)
+            act.setToolTip(f"{label}  ({keys})" if keys else label)
+            act.triggered.connect(lambda _c=False, k=kind: self._on_text_format(k))
+            self.text_format_actions[kind] = act
+        self.text_align = 0
+        self.align_group = QActionGroup(self)
+        for align, (label, icon) in enumerate((("Align Left", "align-left"), ("Centre", "align-center"),
+                                               ("Align Right", "align-right"))):
+            act = QAction(icons.icon(icon), label, self)
+            act.setCheckable(True)
+            act.setChecked(align == 0)
+            act.setToolTip(label)
+            act.triggered.connect(lambda _c=False, a=align: self._on_text_format(f"align{a}"))
+            self.align_group.addAction(act)
+            self.text_format_actions[f"align{align}"] = act
+
+    def _on_text_format(self, kind):
+        tab = self.current_tab()
+        if kind.startswith("align"):
+            self.text_align = int(kind[-1])
+        applied = tab is not None and tab.format_text(kind)
+        if applied and tab.text_edit is not None:
+            self.sync_text_format(tab.text_edit["editor"])
+
+    def pending_text_formats(self):
+        """The formats switched on (before typing) for the next new text box."""
+        return [k for k, *_ in self.TEXT_FORMATS if self.text_format_actions[k].isChecked()]
+
+    def sync_text_format(self, editor):
+        """The buttons show the formatting where the cursor is."""
+        from .inline_text import run_style
+
+        style = run_style(editor.currentCharFormat())
+        states = {"b": "b" in style, "i": "i" in style, "u": "u" in style, "s": "s" in style,
+                  "sup": style.get("v") == 1, "sub": style.get("v") == -1}
+        for kind, on in states.items():
+            self.text_format_actions[kind].setChecked(on)
+        self.text_align = editor.align
+        act = self.text_format_actions[f"align{editor.align}"]
+        act.setChecked(True)
+        if hasattr(self, "align_button"):
+            self.align_button.setIcon(act.icon())
 
     @staticmethod
     def _spacer(width=None):
@@ -413,7 +469,7 @@ class MainWindow(QMainWindow):
         self.tool_toolbar = QToolBar("Tools")
         self.tool_toolbar.setObjectName("toolBar")
         self.tool_toolbar.setMovable(False)
-        self.tool_toolbar.setIconSize(QSize(20, 20))
+        self.tool_toolbar.setIconSize(QSize(19, 19))
         self.addToolBar(self.tool_toolbar)
 
         self.tool_group = QActionGroup(self)
@@ -464,10 +520,12 @@ class MainWindow(QMainWindow):
 
         self.font_family_combo = QComboBox()
         fonts.fill_font_combo(self.font_family_combo, offer_create=True)
-        self.font_family_combo.setMinimumWidth(190)
+        self.font_family_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.font_family_combo.setMinimumContentsLength(12)   # not as wide as the longest font name
+        self.font_family_combo.setMinimumWidth(140)
         self.font_family_combo.setToolTip("Font (type to search)")
         self.font_family_combo.textActivated.connect(self._on_font_picked)
-        prop("font", "Font", self.font_family_combo)
+        prop("font", None, self.font_family_combo)   # the tooltip names it
 
         self.font_spin = QSpinBox()
         self.font_spin.setRange(6, 96)
@@ -475,6 +533,29 @@ class MainWindow(QMainWindow):
         self.font_spin.setToolTip("Font size")
         self.font_spin.valueChanged.connect(self._set_fontsize)
         prop("fontsize", None, self.font_spin)
+
+        format_acts = [self.tool_toolbar.addWidget(self._spacer(4))]
+        for kind, act in self.text_format_actions.items():
+            if kind.startswith("align"):
+                continue
+            button = QToolButton()
+            button.setDefaultAction(act)
+            button.setFocusPolicy(Qt.NoFocus)      # the text being typed keeps the focus
+            format_acts.append(self.tool_toolbar.addWidget(button))
+        # the three alignments share one button (its menu), to keep the toolbar short
+        from PySide6.QtWidgets import QMenu
+
+        self.align_button = QToolButton()
+        self.align_button.setFocusPolicy(Qt.NoFocus)
+        self.align_button.setPopupMode(QToolButton.InstantPopup)
+        self.align_button.setToolTip("Alignment")
+        align_menu = QMenu(self.align_button)
+        align_menu.addActions(self.align_group.actions())
+        self.align_button.setMenu(align_menu)
+        self.align_group.triggered.connect(lambda act: self.align_button.setIcon(act.icon()))
+        self.align_button.setIcon(self.text_format_actions["align0"].icon())
+        format_acts.append(self.tool_toolbar.addWidget(self.align_button))
+        self._property_actions["textformat"] = format_acts
 
         self.stamp_combo = QComboBox()
         self.stamp_combo.addItems(STAMP_NAMES)
@@ -519,6 +600,7 @@ class MainWindow(QMainWindow):
             "width": tool in WIDTH_TOOLS,
             "font": tool in FONT_TOOLS and tool != Tool.FORMULA,  # maths is set in its own fonts
             "fontsize": tool in FONT_TOOLS,
+            "textformat": tool == Tool.TEXTBOX,
             "stamp": tool == Tool.STAMP,
             "unit": tool in UNIT_TOOLS,
             "smooth": tool in (Tool.INK, Tool.MARKER),
