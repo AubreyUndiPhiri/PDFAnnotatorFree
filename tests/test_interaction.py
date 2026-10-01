@@ -257,3 +257,92 @@ def test_ribbon_has_no_duplicate_underline_or_strike(window):
             ribbon_actions.add(widget.defaultAction())
     assert w.text_format_actions["u"] not in ribbon_actions and w.text_format_actions["s"] not in ribbon_actions
     assert w.text_format_actions["b"] in ribbon_actions                # the rest are there
+
+
+def _drag_eraser(app, widget, points):
+    from PySide6.QtGui import QMouseEvent
+
+    def send(kind, p, button, buttons):
+        ev = QMouseEvent(kind, QPointF(*p), widget.mapToGlobal(QPointF(*p)), button, buttons, Qt.NoModifier)
+        QApplication.sendEvent(widget, ev)
+
+    send(QEvent.MouseButtonPress, points[0], Qt.LeftButton, Qt.LeftButton)
+    for p in points[1:]:
+        send(QEvent.MouseMove, p, Qt.NoButton, Qt.LeftButton)
+    send(QEvent.MouseButtonRelease, points[-1], Qt.LeftButton, Qt.NoButton)
+    app.processEvents()
+
+
+def test_eraser_rubs_out_part_of_a_stroke_and_stroke_eraser_removes_it(window, app):
+    from PySide6.QtGui import QColor
+
+    w, tab = window
+    widget = tab.page_widgets[0]
+    page = widget.page()
+    for y in (420, 480):
+        pdf_ops.add_ink(page, [fitz.Point(60 + i, y) for i in range(0, 240, 4)], QColor("black"), 2)
+    tab.document.snapshot()
+    widget.render()
+
+    def inks():
+        return [a for a in page.annots() if a.type[0] == fitz.PDF_ANNOT_INK]
+
+    w.set_eraser_mode("point")
+    assert w.current_tool == Tool.ERASER and w.tool_actions[Tool.ERASER].text() == "Eraser"
+    w.set_eraser_size(10)
+    x = tab.pdf_to_px(widget, fitz.Point(180, 420)).x()
+    y0, y1 = tab.pdf_to_px(widget, fitz.Point(180, 405)).y(), tab.pdf_to_px(widget, fitz.Point(180, 435)).y()
+    _drag_eraser(app, widget, [(x, y0), (x, (y0 + y1) / 2), (x, y1)])
+    assert len(inks()) == 3                       # the top stroke is cut in two; the other is untouched
+    tab.undo()
+    widget = tab.page_widgets[0]
+    widget.render()
+    page = widget.page()
+    assert len(inks()) == 2                       # one drag, one undo step
+
+    w.set_eraser_mode("stroke")
+    assert w.tool_actions[Tool.ERASER].text() == "Stroke Eraser"
+    _drag_eraser(app, widget, [(x, y0), (x, (y0 + y1) / 2), (x, y1)])
+    assert len(inks()) == 1                       # the whole top stroke went
+    w.toggle_eraser_mode()
+    assert w.eraser_mode == "point"
+
+
+def test_text_box_list_styles(window):
+    w, tab = window
+    w.set_tool(Tool.TEXTBOX)
+    tab.begin_text_edit(tab.page_widgets[0], origin_pdf=fitz.Point(60, 560), width_pt=220)
+    editor = tab.text_edit["editor"]
+    w.list_actions["lower-alpha-paren"].trigger()
+    editor.insertPlainText("First\nSecond")
+    annot = tab.finish_text_editing()
+    style = pdf_ops.freetext_style(annot)
+    assert style["paras"] == ["lower-alpha-paren"] * 2
+    lines = pdf_ops.rich_layout(style["runs"] or [{"t": style["text"]}], 12, "Helvetica", 200, style["paras"])
+    assert [l["marker"] for l in lines] == ["a)", "b)"]
+    tab.selected = [(0, annot)]
+    tab.format_text("upper-roman")
+    box = next(a for a in tab.page_widgets[0].page().annots() if a.xref == annot.xref)
+    assert pdf_ops.freetext_style(box)["paras"] == ["upper-roman"] * 2
+    assert pdf_ops.list_marker("upper-roman", 4) == "IV." and pdf_ops.list_marker("number-parens", 3) == "(3)"
+    tab.format_text("none")
+    assert pdf_ops.freetext_style(box)["paras"] == [""] * 2
+
+
+def test_rename_a_document_from_its_tab(window, tmp_path):
+    w, tab = window
+    old = tab.document.path
+    assert w.rename_tab(tab, "Renamed copy")
+    assert tab.document.path.endswith("Renamed copy.pdf") and os.path.exists(tab.document.path)
+    assert not os.path.exists(old)
+    assert "Renamed copy.pdf" in w.tabs.tabText(w.tabs.indexOf(tab))
+    fresh = w.new_tab()
+    assert w.rename_tab(fresh, "Minutes")              # never saved: just the name
+    assert fresh.display_name() == "Minutes" and "Minutes" in w.tabs.tabText(w.tabs.indexOf(fresh))
+    # double-clicking the tab opens the name for editing in place
+    w.start_tab_rename(w.tabs.indexOf(fresh))
+    edit = w._rename_edit
+    assert edit is not None and edit.text() == "Minutes"
+    edit.setText("Agenda")
+    edit.returnPressed.emit()
+    assert fresh.display_name() == "Agenda"

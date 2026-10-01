@@ -2,6 +2,8 @@
 import io
 import base64
 import json
+import math
+import string
 import zlib
 from functools import lru_cache
 
@@ -356,17 +358,64 @@ def _run_width(text, size, fontname, run):
     return _font_file(f["path"]).text_length(text, fontsize=s)
 
 
-PARAS_KEY = "AupParas"        # per paragraph: "" | "bullet" | "number"
+PARAS_KEY = "AupParas"        # per paragraph: "" or a LIST_STYLES key
 SPACING_KEY = "AupSpacing"    # line spacing, a multiple of the normal line height
 JUSTIFY_KEY = "AupJustify"    # "true": justified (PDF's /Q only knows left / centre / right)
 JUSTIFY = 3                   # the align value for justified text
 LIST_INDENT = 1.25            # how far list text sits from the box edge, in font sizes
 
+# Bullet and numbering styles: key -> (menu label, kind, prefix, suffix).
+# Bullets are drawn as shapes (any font shows them); numbers as text.
+LIST_STYLES = {
+    "bullet": ("Filled round bullet", "disc", "", ""),
+    "bullet-circle": ("Hollow round bullet", "circle", "", ""),
+    "bullet-square": ("Square bullet", "square", "", ""),
+    "number": ("1.  2.  3.", "decimal", "", "."),
+    "number-paren": ("1)  2)  3)", "decimal", "", ")"),
+    "number-parens": ("(1)  (2)  (3)", "decimal", "(", ")"),
+    "lower-alpha": ("a.  b.  c.", "lower-alpha", "", "."),
+    "lower-alpha-paren": ("a)  b)  c)", "lower-alpha", "", ")"),
+    "upper-alpha": ("A.  B.  C.", "upper-alpha", "", "."),
+    "lower-roman": ("i.  ii.  iii.", "lower-roman", "", "."),
+    "upper-roman": ("I.  II.  III.", "upper-roman", "", "."),
+}
+BULLET_STYLES = [k for k, v in LIST_STYLES.items() if v[1] in ("disc", "circle", "square")]
+NUMBER_STYLES = [k for k in LIST_STYLES if k not in BULLET_STYLES]
+_BULLET_GLYPHS = {"disc": "•", "circle": "◦", "square": "▪"}
+
+
+def _roman(n):
+    out = ""
+    for value, letters in ((1000, "m"), (900, "cm"), (500, "d"), (400, "cd"), (100, "c"), (90, "xc"),
+                           (50, "l"), (40, "xl"), (10, "x"), (9, "ix"), (5, "v"), (4, "iv"), (1, "i")):
+        while n >= value:
+            out += letters
+            n -= value
+    return out
+
+
+def _alpha(n):
+    out = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        out = chr(97 + r) + out
+    return out
+
+
+def list_marker(style, number):
+    """The marker of the `number`th item (1-based) of a list in `style`."""
+    _label, kind, prefix, suffix = LIST_STYLES.get(style, LIST_STYLES["bullet"])
+    if kind in _BULLET_GLYPHS:
+        return _BULLET_GLYPHS[kind]
+    text = {"decimal": str(number), "lower-alpha": _alpha(number), "upper-alpha": _alpha(number).upper(),
+            "lower-roman": _roman(number), "upper-roman": _roman(number).upper()}[kind]
+    return prefix + text + suffix
+
 
 def _clean_paras(paras, text):
     """One entry per paragraph of `text` ("" when it isn't in a list)."""
     count = text.count("\n") + 1
-    paras = [p if p in ("bullet", "number") else "" for p in (paras or [])][:count]
+    paras = [p if p in LIST_STYLES else "" for p in (paras or [])][:count]
     return paras + [""] * (count - len(paras))
 
 
@@ -377,7 +426,7 @@ def needs_own_drawing(runs=None, paras=None, spacing=1.0, align=0):
 
 def rich_layout(runs, size, fontname, width=None, paras=None):
     """The box's lines: dicts with "segs" [(text, run, width)], "w" (text
-    width), "indent", "marker" ("•", "3." or "") and "end" (last line of its
+    width), "indent", "marker" ("•", "3.", "(c)" ... or "") and "end" (last line of its
     paragraph). Words (which may mix styles, like x²) wrap at `width`; list
     paragraphs wrap at the width left after their indent (a hanging indent)."""
     import re
@@ -398,10 +447,12 @@ def rich_layout(runs, size, fontname, width=None, paras=None):
                     words.append((kind, [(piece, run)]))
     paras = _clean_paras(paras, "\n" * (len(paragraphs) - 1))
     lines, number = [], 0
+    previous = ""
     for words, kind in zip(paragraphs, paras):
-        number = number + 1 if kind == "number" else 0
+        number = number + 1 if kind and kind == previous else 1   # a list counts on while its style does
+        previous = kind
         indent = LIST_INDENT * size if kind else 0.0
-        marker = "•" if kind == "bullet" else f"{number}." if kind == "number" else ""
+        marker = list_marker(kind, number) if kind else ""
         room = None if width is None else max(size, width - indent)
         line, line_w, spaces, first = [], 0.0, [], True
         for item in words:
@@ -440,7 +491,7 @@ def _draw_rich(annot, style, runs):
     sp = scratch.new_page(width=w, height=h)
     resources = {}        # resource name -> font object xref (in the real document)
     file_fonts = {}       # font path -> resource name
-    chars = "".join(sorted(set(runs_text(runs).replace("\n", "") + "•0123456789.")))
+    chars = "".join(sorted(set(runs_text(runs).replace("\n", "") + "0123456789.()" + string.ascii_letters)))
 
     def font_ref(f, text):
         if "code" in f and any(ord(ch) > 255 for ch in text):
@@ -483,10 +534,21 @@ def _draw_rich(annot, style, runs):
         if align == JUSTIFY and not line["end"]:
             gaps = sum(1 for t, _r, _w in line["segs"] if not t.strip())
             stretch = (room - line["w"]) / gaps if gaps else 0.0
-        if line["marker"]:
-            mx = line["indent"] - LIST_INDENT * size * 0.8
-            sp.insert_text((mx, baseline), line["marker"], fontname=font_ref(plain, line["marker"]), fontsize=size,
-                           color=color)
+        marker = line["marker"]
+        if marker in _BULLET_GLYPHS.values():   # bullets are shapes, so every font has them
+            r = 0.17 * size
+            c = fitz.Point(line["indent"] - LIST_INDENT * size * 0.8 + 0.6 * r + 0.1 * size, baseline - 0.33 * size)
+            if marker == _BULLET_GLYPHS["square"]:
+                sp.draw_rect(fitz.Rect(c.x - r * 0.85, c.y - r * 0.85, c.x + r * 0.85, c.y + r * 0.85),
+                             color=None, fill=color, width=0)
+            elif marker == _BULLET_GLYPHS["circle"]:
+                sp.draw_circle(c, r * 0.85, color=color, fill=None, width=max(0.4, 0.07 * size))
+            else:
+                sp.draw_circle(c, r, color=None, fill=color, width=0)
+        elif marker:   # numbers end just before the text, as Word sets them
+            mw = _run_width(marker, size, fontname, {})
+            mx = max(0.0, line["indent"] - 0.3 * size - mw)
+            sp.insert_text((mx, baseline), marker, fontname=font_ref(plain, marker), fontsize=size, color=color)
         for text, run, seg_w in line["segs"]:
             s = _run_size(size, run)
             y = baseline - SUPER_RISE * size if run.get("v") == 1 else \
@@ -994,18 +1056,142 @@ def crop_page(page: fitz.Page, p1: fitz.Point, p2: fitz.Point):
     page.set_cropbox(rect)
 
 
-def erase_along_path(page: fitz.Page, points) -> int:
-    """Delete every annotation whose rect contains any point along the given
-    path. Returns the number of annotations removed."""
-    to_delete = {}
-    for annot in page.annots():
-        for p in points:
-            if annot.rect.contains(p):
-                to_delete[annot.xref] = annot
-                break
+# ---- the two erasers --------------------------------------------------------
+# The Stroke Eraser removes whatever it touches, whole. The Eraser rubs out
+# only the parts of pen / marker strokes it passes over: a stroke it crosses
+# is split into the pieces left on either side (each its own ink annotation);
+# other annotations are left alone.
+
+def _seg_dist(p, a, b):
+    """Distance from point p to the segment a-b (all (x, y) tuples)."""
+    ax, ay = a
+    dx, dy = b[0] - ax, b[1] - ay
+    length2 = dx * dx + dy * dy
+    t = 0.0 if length2 == 0 else max(0.0, min(1.0, ((p[0] - ax) * dx + (p[1] - ay) * dy) / length2))
+    return math.hypot(p[0] - ax - t * dx, p[1] - ay - t * dy)
+
+
+def _path_segments(points):
+    pts = [_xy(p) for p in points]
+    return list(zip(pts, pts[1:])) if len(pts) > 1 else [(pts[0], pts[0])] if pts else []
+
+
+def _near_path(p, segments, reach):
+    return any(_seg_dist(p, a, b) <= reach for a, b in segments)
+
+
+def _resample(stroke, widths, step):
+    """The stroke with extra points so no two are more than `step` apart
+    (the eraser can then cut it anywhere, not just at the points drawn)."""
+    out_p, out_w = [stroke[0]], [widths[0]] if widths else None
+    for i in range(1, len(stroke)):
+        a, b = stroke[i - 1], stroke[i]
+        n = max(1, int(math.hypot(b[0] - a[0], b[1] - a[1]) / step))
+        for k in range(1, n + 1):
+            f = k / n
+            out_p.append((a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f))
+            if widths:
+                out_w.append(widths[i - 1] + (widths[i] - widths[i - 1]) * f)
+    return out_p, out_w
+
+
+def _segments_cross(a, b, c, d):
+    def side(p, q, r):
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    return side(a, b, c) * side(a, b, d) < 0 and side(c, d, a) * side(c, d, b) < 0
+
+
+def _seg_seg_dist(a, b, c, d):
+    if _segments_cross(a, b, c, d):
+        return 0.0
+    return min(_seg_dist(a, c, d), _seg_dist(b, c, d), _seg_dist(c, a, b), _seg_dist(d, a, b))
+
+
+def _stroke_hit(annot, segments, radius):
+    """Does the eraser path (with `radius`) touch this annotation? Pen and
+    marker strokes only count where their line is; anything else where its box is."""
+    rect = fitz.Rect(annot.rect)
+    grown = fitz.Rect(rect.x0 - radius, rect.y0 - radius, rect.x1 + radius, rect.y1 + radius)
+    if not any(grown.contains(fitz.Point(a)) or grown.contains(fitz.Point(b)) or
+               any(_segments_cross(a, b, e0, e1) for e0, e1 in
+                   ((grown.tl, grown.tr), (grown.tr, grown.br), (grown.br, grown.bl), (grown.bl, grown.tl)))
+               for a, b in segments):
+        return False
+    if annot.type[0] != fitz.PDF_ANNOT_INK:
+        return True
+    reach = radius + ((annot.border or {}).get("width") or 1.0) / 2
+    for stroke in annot.vertices or []:
+        pts = [tuple(p) for p in stroke]
+        pairs = list(zip(pts, pts[1:])) or [(pts[0], pts[0])] if pts else []
+        if any(_seg_seg_dist(a, b, s0, s1) <= reach for a, b in pairs for s0, s1 in segments):
+            return True
+    return False
+
+
+def erase_along_path(page: fitz.Page, points, radius=2.0) -> int:
+    """The Stroke Eraser: delete every annotation the path touches (pen and
+    marker strokes only where their line is, not anywhere in their box).
+    Returns the number of annotations removed."""
+    segments = _path_segments(points)
+    if not segments:
+        return 0
+    to_delete = {annot.xref: annot for annot in page.annots() if _stroke_hit(annot, segments, radius)}
     for annot in to_delete.values():
         page.delete_annot(annot)
     return len(to_delete)
+
+
+def erase_ink_along_path(page: fitz.Page, points, radius) -> int:
+    """The Eraser: rub out the parts of ink strokes within `radius` of the
+    path. Strokes it cuts through are replaced by the pieces left over;
+    anything else it touches (a box, a note, a highlight) can't be cut, so it
+    goes whole. Returns how many annotations were changed or removed."""
+    segments = _path_segments(points)
+    if not segments:
+        return 0
+    others = [a for a in page.annots() if a.type[0] != fitz.PDF_ANNOT_INK and _stroke_hit(a, segments, radius)]
+    for annot in others:
+        page.delete_annot(annot)
+    xs = [c for s in segments for c in (s[0][0], s[1][0])]
+    ys = [c for s in segments for c in (s[0][1], s[1][1])]
+    area = fitz.Rect(min(xs) - radius, min(ys) - radius, max(xs) + radius, max(ys) + radius)
+    changed = len(others)
+    for annot in list(page.annots(types=[fitz.PDF_ANNOT_INK])):
+        width = (annot.border or {}).get("width") or 1.0
+        if not fitz.Rect(annot.rect).intersects(area):
+            continue
+        reach = radius + width / 2
+        widths = pressure_widths(annot)
+        strokes, offset, pieces, hit = annot.vertices or [], 0, [], False
+        for stroke in strokes:
+            pts = [tuple(p) for p in stroke]
+            ws = widths[offset:offset + len(pts)] if widths and len(widths) >= offset + len(pts) else None
+            offset += len(pts)
+            pts, ws = _resample(pts, ws, max(0.5, radius / 3)) if len(pts) > 1 else (pts, ws)
+            run_p, run_w = [], []
+            for i, p in enumerate(pts):
+                if _near_path(p, segments, reach):
+                    hit = True
+                    if len(run_p) > 1:
+                        pieces.append((run_p, run_w))
+                    run_p, run_w = [], []
+                else:
+                    run_p.append(p)
+                    if ws:
+                        run_w.append(ws[i])
+            if len(run_p) > 1 or (len(pts) == 1 and run_p):
+                pieces.append((run_p, run_w))
+        if not hit:
+            continue
+        changed += 1
+        data = serialize_annot(annot)
+        page.delete_annot(annot)
+        for piece_p, piece_w in pieces:
+            data["vertices"] = [piece_p]
+            data["pressure"] = piece_w or None
+            deserialize_and_add(page, data)
+    return changed
 
 
 def point_in_polygon(point: fitz.Point, polygon) -> bool:

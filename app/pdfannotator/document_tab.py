@@ -201,7 +201,7 @@ class DocumentTab(QWidget):
     def display_name(self) -> str:
         if self.document.path:
             return os.path.basename(self.document.path)
-        return "Untitled"
+        return getattr(self, "custom_name", None) or "Untitled"
 
     # ---------------------------------------------------------------
     # Undo / redo
@@ -681,14 +681,41 @@ class DocumentTab(QWidget):
         widget.render()
         self.refresh_thumbnail(widget.page_index)
 
-    def commit_eraser(self, widget, points):
+    # ---- the erasers: they work while dragging; one drag is one undo step
+    @property
+    def eraser_mode(self):
+        return getattr(self.window, "eraser_mode", "point")
+
+    def eraser_radius(self, widget):
+        """In points: the Eraser's own size, or (the Stroke Eraser) a few pixels."""
+        if self.eraser_mode == "stroke":
+            return 3.0 / max(0.01, self.px_per_pt(widget))
+        return max(0.5, self.window.tool_styles[Tool.ERASER]["width"] / 2)
+
+    def erase_step(self, widget, points):
+        """Erase along the latest bit of the eraser's path (PDF points)."""
         page = widget.page()
-        removed = pdf_ops.erase_along_path(page, points)
-        if removed:
-            self.document.snapshot()
+        radius = self.eraser_radius(widget)
+        if self.eraser_mode == "stroke":
+            changed = pdf_ops.erase_along_path(page, points, radius)
+        else:
+            changed = pdf_ops.erase_ink_along_path(page, points, radius)
+        if changed:
+            self._erased_pages = getattr(self, "_erased_pages", set()) | {widget.page_index}
             self.selected = [s for s in self.selected if s[0] != widget.page_index]
             widget.render()
-            self.refresh_thumbnail(widget.page_index)
+        return changed
+
+    def commit_eraser(self, widget, points):
+        """The eraser lifted. `points` is the whole path; whatever it hasn't
+        erased yet (a path that was never dragged step by step) goes now."""
+        if widget.page_index not in getattr(self, "_erased_pages", set()):
+            self.erase_step(widget, points)
+        pages, self._erased_pages = getattr(self, "_erased_pages", set()), set()
+        if pages:
+            self.document.snapshot()
+            for index in pages:
+                self.refresh_thumbnail(index)
 
     def commit_lasso(self, widget, points):
         page = widget.page()
@@ -992,10 +1019,11 @@ class DocumentTab(QWidget):
         editor.finished.connect(self.finish_text_editing)
         if annot is None:
             for kind in self.window.pending_text_formats():   # B / I / bullets ... switched on before typing
-                editor.toggle_list(kind) if kind in ("bullet", "number") else editor.toggle(kind)
+                editor.toggle_list(kind) if kind in pdf_ops.LIST_STYLES else editor.toggle(kind)
         editor.currentCharFormatChanged.connect(lambda _f: self.window.sync_text_format(editor))
         self.window.sync_text_format(editor)
-        format_bar = FormatBar(widget, self.window.text_format_actions, editor, self.window.spacing_menu)
+        format_bar = FormatBar(widget, self.window.text_format_actions, editor, self.window.spacing_menu,
+                               getattr(self.window, "list_menu", None))
         editor.show()
         editor.setFocus()
         self.text_edit = {"widget": widget, "editor": editor, "origin": fitz.Point(origin_pdf), "width": width_pt,
@@ -1110,7 +1138,7 @@ class DocumentTab(QWidget):
                 editor.set_alignment(int(kind[-1]))
             elif kind.startswith("spacing:"):
                 editor.set_line_spacing(float(kind.split(":")[1]))
-            elif kind in ("bullet", "number"):
+            elif kind in pdf_ops.LIST_STYLES or kind == "none":
                 editor.toggle_list(kind)
             else:
                 editor.toggle(kind)
@@ -1128,7 +1156,9 @@ class DocumentTab(QWidget):
                 align = int(kind[-1])
             elif kind.startswith("spacing:"):
                 spacing = float(kind.split(":")[1])
-            elif kind in ("bullet", "number"):
+            elif kind == "none":
+                paras = [""] * len(paras)
+            elif kind in pdf_ops.LIST_STYLES:
                 paras = [""] * len(paras) if all(p == kind for p in paras) else [kind] * len(paras)
             else:
                 key, value = flag

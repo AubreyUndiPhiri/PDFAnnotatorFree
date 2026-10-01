@@ -41,7 +41,9 @@ class EditorTab(QWidget):
             self.changed.emit()
 
     def display_name(self) -> str:
-        return os.path.basename(self.path) if self.path else f"Untitled {self.kind_label}"
+        if self.path:
+            return os.path.basename(self.path)
+        return getattr(self, "custom_name", None) or f"Untitled {self.kind_label}"
 
     def status_text(self) -> str:
         return ""

@@ -1,7 +1,8 @@
 """The pen panel: everything for freehand writing in one small floating bar.
 
 It appears while the ribbon (the toolbars) is hidden and a pen tool is in
-use: the Pen, Marker and Eraser, a palette of colours, three line widths,
+use: the Pen, Marker and Eraser (its arrow picks the Eraser or the Stroke
+Eraser), a palette of colours, three line widths,
 smoothing and pressure, and undo / redo. Drag it anywhere in the window by
 its grip (or any empty spot), and turn it horizontal or vertical with its
 rotate button (or a double-click on the grip). Where it sits and which way
@@ -22,7 +23,7 @@ PANEL_TOOLS = (Tool.INK, Tool.MARKER, Tool.ERASER, Tool.SELECT)
 
 # ink colours, then soft highlighter tones (the Marker draws them see-through)
 PALETTE = ["#141414", "#2563eb", "#dc2626", "#16a34a", "#7c3aed", "#ea580c", "#ffeb3b", "#f472b6"]
-WIDTHS = {Tool.INK: (1.0, 2.0, 4.0), Tool.MARKER: (6.0, 10.0, 16.0)}
+WIDTHS = {Tool.INK: (1.0, 2.0, 4.0), Tool.MARKER: (6.0, 10.0, 16.0), Tool.ERASER: (4.0, 10.0, 20.0)}
 
 
 def _chip(color, size=22):
@@ -93,7 +94,12 @@ class PenPanel(QFrame):
         self._group()
 
         for tool in PANEL_TOOLS:
-            self._add(self._button(window.tool_actions[tool]))
+            btn = self._button(window.tool_actions[tool])
+            if tool == Tool.ERASER:
+                btn.setMenu(window.eraser_menu)
+                btn.setPopupMode(QToolButton.MenuButtonPopup)
+                self.eraser_button = btn
+            self._add(btn)
         self._rule()
         self.swatches = QButtonGroup(self)
         self.swatches.setExclusive(True)
@@ -261,13 +267,23 @@ class PenPanel(QFrame):
                 btn.setChecked(False)
             self.swatches.setExclusive(True)
         widths = WIDTHS.get(tool)
+        if tool == Tool.ERASER and self.window.eraser_mode != "point":
+            widths = None     # the Stroke Eraser has no size
         for i, btn in enumerate(self.width_buttons):
             btn.setIcon(_dot((4, 7, 11)[i]))
             btn.setEnabled(widths is not None)
             btn.setChecked(bool(widths) and abs(style["width"] - widths[i]) < 0.01)
+            if tool == Tool.ERASER:
+                btn.setToolTip(("Small", "Medium", "Large")[i] + " eraser")
+            else:
+                btn.setToolTip(("Thin", "Medium", "Thick")[i] + " line")
 
     def _pick_width(self, index):
         tool = self.window.current_tool if self.window.current_tool in WIDTHS else Tool.INK
+        if tool == Tool.ERASER:
+            self.window.set_eraser_size(WIDTHS[tool][index])
+            self.refresh()
+            return
         if self.window.current_tool not in WIDTHS:
             self.window.set_tool(Tool.INK)
         self.window.set_pen_width(WIDTHS[tool][index])

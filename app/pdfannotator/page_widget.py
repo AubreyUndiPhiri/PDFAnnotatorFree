@@ -2,10 +2,10 @@ import time
 
 import pymupdf as fitz
 from PySide6.QtWidgets import QApplication, QWidget
-from PySide6.QtGui import QPainter, QPainterPath, QPixmap, QImage, QPen, QColor, QPointingDevice
+from PySide6.QtGui import QColor, QCursor, QImage, QPainter, QPainterPath, QPen, QPixmap, QPointingDevice
 from PySide6.QtCore import QEvent, Qt, QPoint, QPointF, QRect
 
-from . import handles, pdf_ops, strokes, theme
+from . import handles, icons, pdf_ops, strokes, theme
 from .tools import Tool
 
 # Tools that collect a freehand point path while the mouse is dragging
@@ -75,7 +75,34 @@ class PageWidget(QWidget):
         self.apply_tool_cursor()
 
     def apply_tool_cursor(self):
+        if self.controller.current_tool == Tool.ERASER:
+            self.setCursor(self._eraser_cursor())
+            return
         self.setCursor(TOOL_CURSORS.get(self.controller.current_tool, Qt.CrossCursor))
+
+    def _eraser_cursor(self):
+        """The Eraser: a ring as big as what it rubs out. The Stroke Eraser:
+        a small ring with its icon beside it."""
+        stroke = getattr(self.controller, "eraser_mode", "point") == "stroke"
+        try:
+            diameter = 2 * self.controller.eraser_radius(self) * self.controller.px_per_pt(self)
+        except Exception:   # no page yet
+            diameter = 12
+        diameter = 8 if stroke else max(6, min(160, round(diameter)))
+        side = max(diameter + 4, 34 if stroke else 0)
+        pix = QPixmap(side, side)
+        pix.fill(Qt.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.Antialiasing)
+        c = (side - 1) / 2 if not stroke else diameter / 2 + 2
+        for color, width in ((QColor(255, 255, 255, 220), 3.0), (QColor(30, 30, 30, 230), 1.2)):
+            p.setPen(QPen(color, width))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(QPointF(c, c if not stroke else side - c), diameter / 2, diameter / 2)
+        if stroke:
+            p.drawPixmap(side - 22, 0, icons.pixmap("eraser-stroke", 22, "#1e1e1e"))
+        p.end()
+        return QCursor(pix, round(c), round(c if not stroke else side - c))
 
     def page(self) -> fitz.Page:
         return self.controller.document.page(self.page_index)
@@ -102,6 +129,8 @@ class PageWidget(QWidget):
         self.pixmap = QPixmap.fromImage(img)
         self.setFixedSize(self.pixmap.size())
         self.rendered = True
+        if self.controller.current_tool == Tool.ERASER:
+            self.apply_tool_cursor()   # the ring follows the zoom
         self.update()
 
     def invalidate(self):
@@ -148,7 +177,7 @@ class PageWidget(QWidget):
             tool = self.controller.current_tool
             if tool in DRAW_TOOLS and len(self._path_points) > 1:
                 self._paint_stroke_preview(painter, tool)
-            elif tool in PATH_TOOLS and len(self._path_points) > 1:
+            elif tool in PATH_TOOLS and tool != Tool.ERASER and len(self._path_points) > 1:
                 for i in range(1, len(self._path_points)):
                     painter.drawLine(self._path_points[i - 1], self._path_points[i])
             elif self._drag_start and self._drag_current:
@@ -362,6 +391,8 @@ class PageWidget(QWidget):
             self._speed_pressure = None
             if tool == Tool.INK and self.controller.ink_pressure:
                 self._path_pressure = [self._pressure_now(pos_f, event)]
+            if tool == Tool.ERASER:
+                self.controller.erase_step(self, [self.to_pdf_point(pos_f)])
         self.update()
 
     def mouseMoveEvent(self, event):
@@ -407,6 +438,8 @@ class PageWidget(QWidget):
             self._path_points.append(pos_f)
             if self._path_pressure:
                 self._path_pressure.append(self._pressure_now(pos_f, event))
+            if tool == Tool.ERASER:   # it erases as it goes
+                self.controller.erase_step(self, [self.to_pdf_point(p) for p in self._path_points[-2:]])
         if tool == Tool.MEASURE:
             p1 = self.to_pdf_point(self._drag_start)
             p2 = self.to_pdf_point(pos)

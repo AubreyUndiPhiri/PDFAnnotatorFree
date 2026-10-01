@@ -80,7 +80,9 @@ Single-letter shortcuts are shown in brackets.
   first to set the box width so the text wraps. The font, size and colour in
   the toolbar apply live. Press Esc (or Ctrl+Enter) or click elsewhere on the
   page to finish; the box is then selected, ready to move or resize. Click an
-  existing text box with the Text tool to edit it.
+  existing text box with the Text tool to edit it. The list button offers
+  filled, hollow and square bullets and numbering as 1. / 1) / (1), a. /
+  a), A., i. and I.
 - **Formula** (Σ): click on the page and type LaTeX maths (`E = mc^2`,
   `\frac{a}{b}`, `\sqrt{x}`, `\sum_{i=1}^{n}`, `\begin{cases}...`; `$...$`
   delimiters are optional). The rendered formula previews under the box as
@@ -98,7 +100,14 @@ Single-letter shortcuts are shown in brackets.
 - **Polygon** (G): click to add points, double-click or Enter to finish,
   Escape to cancel.
 - **Dimension** (D): drag to measure and permanently label a distance.
-- **Eraser** (E): drag over annotations to delete them.
+- **Eraser** (E): two erasers, picked from the arrow on its button (or the
+  Tools menu; Shift+E switches between them). The **Eraser** rubs out only
+  the parts of pen and marker strokes you pass over (a stroke it crosses is
+  split in two) and removes shapes, notes and text boxes it touches; its
+  size is Small, Medium, Large or Extra Large (or any size in the toolbar),
+  and the cursor is a ring that size. The **Stroke Eraser** removes each
+  annotation it touches whole (strokes only where their line is, not
+  anywhere in their box). Both erase as you drag; one drag is one undo.
 - **Lasso Select** (S): draw a loop to select everything inside it.
 - **Snapshot** (H): drag a region to copy it to the clipboard as an image.
 - **Crop** (C): drag a region to crop the page to it.
@@ -113,7 +122,9 @@ Single-letter shortcuts are shown in brackets.
 ## Menus
 
 - **File**: New, New Word Document, New LaTeX Document, Open (PDF, .docx,
-  .tex and text files; each file gets its own tab), Save / Save As / Save All
+  .tex and text files; each file gets its own tab; double-click a tab, or
+  right-click it > Rename, to rename the document: a saved file is renamed
+  on disk, an unsaved one keeps the name for Save), Save / Save As / Save All
   / Save as Template, Combine Files, Split Every Page to Separate Files,
   Convert to Word, Convert to LaTeX,
   Properties (metadata), Send Mail (opens your mail client; attach the file
@@ -238,16 +249,38 @@ Word documents and LaTeX sources open in tabs next to the PDFs. While one
 is active the PDF tools are hidden, and Save, Undo, Cut/Copy/Paste, Find,
 Print and zoom act on it.
 
-**Word** (`word_editor.py`, `word_io.py`): opens and saves `.docx` (also
-saves `.odt`, `.html`, `.md`, `.txt`; opens `.html`, `.md`, `.txt`). Styles
-(Title, Heading 1-4, Quote, Code), fonts, sizes, bold / italic / underline /
-strike-through, super- and subscript, text and highlight colour, alignment,
-bulleted and numbered lists, indents, tables (right-click to add or delete
-rows and columns, merge and split cells), pictures (insert, paste, resize),
-links (Ctrl+click opens them), page breaks, find and replace (Ctrl+H), Print
-and Export as PDF (which offers to open the PDF in a tab for annotating).
+**Word** (`word_editor.py`, `word_io.py`, `word_dialogs.py`): opens and
+saves `.docx` (also saves `.odt`, `.html`, `.md`, `.txt`; opens `.html`,
+`.md`, `.txt`). A Word-style ribbon:
+
+- **Home**: Undo / Redo; Paste (or Paste Text Only), Cut, Copy, Format
+  Painter; styles (Normal, No Spacing, Title, Subtitle, Heading 1-6, Quote,
+  Intense Quote, Caption, Code); font, size, Increase / Decrease Font Size
+  (Ctrl+] / Ctrl+[), Change Case (Sentence case, lowercase, UPPERCASE,
+  Capitalize Each Word, tOGGLE cASE; Shift+F3 cycles), Small Caps / All
+  Caps, Font... (Ctrl+D), Clear Formatting; bold, italic, underline (single,
+  dotted, dashed, dot-dash, dot-dot-dash, wave), strike-through, sub- and
+  superscript; font colour and highlight palettes; alignment; Bullets
+  (filled, hollow, square) and Numbering (1. 1) (1) a. a) A. i. I., Restart
+  at 1, Continue Numbering, Set Numbering Value), multilevel lists (Tab /
+  Shift+Tab change the level), indents; line spacing (1 to 3, Ctrl+1 / 2 /
+  5) and space before / after; paragraph shading; Paragraph...; show
+  formatting marks (Ctrl+Shift+8); find and replace (Ctrl+H).
+- **Insert**: tables (quick sizes, add / delete rows and columns, merge and
+  split, cell shading; also on right-click), pictures (insert, paste,
+  resize), links (Ctrl+click opens them), horizontal lines, symbols and
+  special characters, the date and time, page breaks.
+- **Layout**: margins (Normal, Narrow, Moderate, Wide, custom), portrait /
+  landscape, paper size (Letter, Legal, A3, A4, A5, B5, Executive),
+  Page Setup..., left / right indents and spacing before / after.
+- **Review**: Word Count (pages, words, characters, paragraphs, lines; of
+  the selection when there is one), find and replace, Select All.
+
+Print and Export as PDF sit at the right of the ribbon (Export offers to open
+the PDF in a tab for annotating).
 Saving builds on the file that was opened, so its styles, numbering,
-headers, footers and page setup are kept. Pages are shown as one continuous
+headers and footers are kept; lists made here get real Word numbering, and
+the page size, orientation and margins set here are saved. Pages are shown as one continuous
 sheet; page breaks are marked with a dashed line. Not supported: old `.doc`
 files, editing headers/footers, comments, tracked changes, text boxes.
 

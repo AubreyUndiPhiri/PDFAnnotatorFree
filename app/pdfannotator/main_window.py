@@ -17,7 +17,7 @@ from .dialogs import SignaturePadDialog, PropertiesDialog, ToolStylesDialog, Fin
 from .tools import (
     Tool, STAMP_NAMES, UNITS, STYLED_TOOLS, DEFAULT_TOOL_STYLE,
     TOOL_STYLE_OVERRIDES, TOOL_SHORTCUTS, TOOL_LABELS, TOOL_HINTS, TOOL_ICONS,
-    TOOL_GROUPS, WIDTH_TOOLS, FONT_TOOLS, UNIT_TOOLS,
+    TOOL_GROUPS, WIDTH_TOOLS, FONT_TOOLS, UNIT_TOOLS, ERASER_MODES, ERASER_SIZES,
 )
 
 APP_TITLE = "Aupedean Annotator"
@@ -117,6 +117,7 @@ class MainWindow(QMainWindow):
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.tabBar().setContextMenuPolicy(Qt.CustomContextMenu)
         self.tabs.tabBar().customContextMenuRequested.connect(self._tab_menu)
+        self.tabs.tabBarDoubleClicked.connect(self.start_tab_rename)   # double-click a tab: rename it
         self.tabs.currentChanged.connect(self._on_tab_switched)
         self.setCentralWidget(self.tabs)
 
@@ -154,6 +155,7 @@ class MainWindow(QMainWindow):
         path = self.tab_path(widget)
         menu = QMenu(self)
         menu.addAction(icons.icon("close"), "Close", lambda: self.close_tab(self.tabs.indexOf(widget)))
+        menu.addAction("Rename...", lambda: self.start_tab_rename(self.tabs.indexOf(widget)))
 
         def close_others():
             for i in reversed(range(self.tabs.count())):
@@ -171,6 +173,98 @@ class MainWindow(QMainWindow):
         folder.setEnabled(bool(path) and os.name == "nt")
         copy.setEnabled(bool(path))
         self.exec_menu(menu, bar.mapToGlobal(pos))
+
+    # ---- renaming a document from its tab
+    def start_tab_rename(self, index):
+        """Type the new name right on the tab: Enter keeps it, Esc (or
+        clicking away without a change) leaves the name as it was."""
+        from PySide6.QtWidgets import QLineEdit
+
+        if index < 0 or index >= self.tabs.count():
+            return
+        widget = self.tabs.widget(index)
+        bar = self.tabs.tabBar()
+        if getattr(self, "_rename_edit", None) is not None:
+            self._rename_edit.deleteLater()
+        current = self._tab_name(widget)
+        edit = QLineEdit(current, bar)
+        edit.setObjectName("tabRename")
+        edit.setGeometry(bar.tabRect(index).adjusted(6, 3, -24, -3))
+        stem = os.path.splitext(current)[0] if os.path.splitext(current)[1] else current
+        edit.setSelection(0, len(stem))     # the name, not its extension
+        edit.setFocus()
+        edit.show()
+        self._rename_edit = edit
+        done = {"finished": False}
+
+        def finish(apply):
+            if done["finished"]:
+                return
+            done["finished"] = True
+            text = edit.text().strip()
+            self._rename_edit = None
+            edit.deleteLater()
+            if apply and text and text != current and self.tabs.indexOf(widget) >= 0:
+                self.rename_tab(widget, text)
+
+        edit.returnPressed.connect(lambda: finish(True))
+        edit.editingFinished.connect(lambda: finish(True))
+        cancel = QShortcut(QKeySequence(Qt.Key_Escape), edit)
+        cancel.setContext(Qt.WidgetShortcut)
+        cancel.activated.connect(lambda: finish(False))
+
+    def _tab_name(self, tab):
+        path = self.tab_path(tab)
+        if path:
+            return os.path.basename(path)
+        return tab.display_name()
+
+    def rename_tab(self, tab, name):
+        """Rename the document: a saved file is renamed on disk (in its own
+        folder, keeping its extension if none is typed); an unsaved one just
+        takes the name, which Save then suggests. Returns True when it worked."""
+        name = name.strip().strip(".")
+        bad = set('<>:"/\\|?*')
+        if not name or any(ch in bad for ch in name):
+            QMessageBox.warning(self, "Rename", f'"{name}" can\'t be used as a file name '
+                                                '(it can\'t contain < > : " / \\ | ? *).')
+            return False
+        path = self.tab_path(tab)
+        if not path:
+            tab.custom_name = name
+            self.on_tab_content_changed(tab)
+            self._rebuild_window_menu()
+            return True
+        old_ext = os.path.splitext(path)[1]
+        if not os.path.splitext(name)[1] or os.path.splitext(name)[1].lower() != old_ext.lower():
+            name += old_ext          # the file stays the same kind of file
+        new_path = os.path.join(os.path.dirname(path), name)
+        if os.path.normcase(new_path) == os.path.normcase(path) and name == os.path.basename(path):
+            return True
+        if os.path.exists(new_path) and os.path.normcase(new_path) != os.path.normcase(path):
+            QMessageBox.warning(self, "Rename", f"There is already a file called {name} in that folder.")
+            return False
+        try:
+            if os.path.exists(path):
+                os.rename(path, new_path)   # (a change of case only works too)
+        except OSError as e:
+            QMessageBox.warning(self, "Rename", f"Could not rename {os.path.basename(path)}:\n{e}")
+            return False
+        if isinstance(tab, EditorTab):
+            watcher = getattr(tab, "watcher", None)
+            if watcher is not None and path in watcher.files():
+                watcher.removePath(path)
+            tab.path = new_path
+            if getattr(tab, "base_path", None) and os.path.normcase(tab.base_path) == os.path.normcase(path):
+                tab.base_path = new_path
+            if watcher is not None:
+                watcher.addPath(new_path)
+        else:
+            tab.document.path = new_path
+        self.on_tab_content_changed(tab)
+        self._rebuild_window_menu()
+        self.statusBar().showMessage(f"Renamed to {name}", 4000)
+        return True
 
     def exec_menu(self, menu, global_pos):
         menu.exec(global_pos)
@@ -335,6 +429,7 @@ class MainWindow(QMainWindow):
                                   tip="Pen strokes get thicker and thinner: with a pen tablet or stylus from "
                                       "how hard you press, with a mouse from how fast you draw")
         self.act_pressure_ink.setChecked(self.ink_pressure)
+        self._create_eraser_actions(settings)
         self._create_text_format_actions()
         self.ribbon_shown = settings.value("ui/ribbon", "true") == "true"
         self.act_ribbon = a("Show Ribbon", self._set_ribbon_shown, None, "Ctrl+F1", checkable=True,
@@ -344,6 +439,71 @@ class MainWindow(QMainWindow):
         self.act_dark = a("Dark Mode", self.toggle_dark_mode, "moon", "Ctrl+Shift+D", checkable=True,
                           tip="Switch between the light (glass) and dark (clay) look")
         self.act_dark.setChecked(theme.mode == theme.DARK)
+
+    # ---- the two erasers: one tool, two ways of working
+    def _create_eraser_actions(self, settings):
+        mode = settings.value("draw/eraser_mode", "point")
+        self.eraser_mode = mode if mode in ERASER_MODES else "point"
+        self.eraser_menu = QMenu("Eraser", self)
+        self.eraser_group = QActionGroup(self)
+        self.eraser_actions = {}
+        for key, (label, icon, hint) in ERASER_MODES.items():
+            act = self.eraser_menu.addAction(icons.icon(icon), label)
+            act.setCheckable(True)
+            act.setChecked(key == self.eraser_mode)
+            act.setStatusTip(hint)
+            act.setToolTip(f"<b>{label}</b><br>{hint}")
+            act.triggered.connect(lambda _c=False, k=key: self.set_eraser_mode(k))
+            self.eraser_group.addAction(act)
+            self.eraser_actions[key] = act
+        self.eraser_menu.addSeparator()
+        size_menu = self.eraser_menu.addMenu("Eraser Size")
+        self.eraser_size_group = QActionGroup(self)
+        for label, width in ERASER_SIZES:
+            act = size_menu.addAction(f"{label}  ({width:g} pt)")
+            act.setCheckable(True)
+            act.setData(width)
+            act.triggered.connect(lambda _c=False, w=width: self.set_eraser_size(w))
+            self.eraser_size_group.addAction(act)
+        self.eraser_size_menu = size_menu
+        self.act_switch_eraser = self._action("Switch Eraser", self.toggle_eraser_mode, None, "Shift+E",
+                                              tip="Switch between the Eraser and the Stroke Eraser")
+
+    def set_eraser_mode(self, mode):
+        """The Eraser (rubs out parts of strokes) or the Stroke Eraser (removes them whole)."""
+        if mode not in ERASER_MODES:
+            return
+        self.eraser_mode = mode
+        theme._settings().setValue("draw/eraser_mode", mode)
+        self.eraser_actions[mode].setChecked(True)
+        self._show_eraser_mode()
+        self.set_tool(Tool.ERASER)
+
+    def toggle_eraser_mode(self):
+        self.set_eraser_mode("stroke" if self.eraser_mode == "point" else "point")
+
+    def set_eraser_size(self, width):
+        self.tool_styles[Tool.ERASER]["width"] = float(width)
+        if self.eraser_mode != "point":
+            self.set_eraser_mode("point")     # only the Eraser has a size
+        else:
+            self.set_tool(Tool.ERASER)
+            self._show_eraser_mode()
+
+    def _show_eraser_mode(self):
+        """The Eraser tool button shows which eraser it is."""
+        label, icon, hint = ERASER_MODES[self.eraser_mode]
+        act = self.tool_actions.get(Tool.ERASER) if hasattr(self, "tool_actions") else None
+        if act is not None:
+            act.setIcon(icons.icon(icon))
+            act.setText(label)
+            act.setToolTip(f"<b>{label}</b>  (E)<br>{hint}<br><i>Click the arrow for the other eraser and sizes.</i>")
+            act.setStatusTip(hint)
+        TOOL_HINTS[Tool.ERASER] = hint
+        TOOL_LABELS[Tool.ERASER] = label
+        width = self.tool_styles[Tool.ERASER]["width"]
+        for size_act in self.eraser_size_group.actions():
+            size_act.setChecked(self.eraser_mode == "point" and abs(size_act.data() - width) < 1e-3)
 
     TEXT_FORMATS = (("b", "Bold", "bold", "Ctrl+B"), ("i", "Italic", "italic", "Ctrl+I"),
                     ("u", "Underline", "text-underline", "Ctrl+U"), ("s", "Strikethrough", "strikeout", ""),
@@ -366,6 +526,7 @@ class MainWindow(QMainWindow):
             act.setToolTip(f"{label}  ({keys})" if keys else label)
             act.triggered.connect(lambda _c=False, k=kind: self._on_text_format(k))
             self.text_format_actions[kind] = act
+        self._create_list_actions()
         self.text_align = 0
         self.align_group = QActionGroup(self)
         for align, (label, icon) in enumerate((("Align Left", "align-left"), ("Centre", "align-center"),
@@ -395,6 +556,40 @@ class MainWindow(QMainWindow):
         self.spacing_custom.setCheckable(True)
         self.spacing_group.addAction(self.spacing_custom)
         self.spacing_custom.triggered.connect(self._custom_text_spacing)
+
+    def _create_list_actions(self):
+        """Every bullet and numbering style, in one menu (Bullets / Numbering
+        are its first two, which the format bar and shortcuts use)."""
+        from PySide6.QtWidgets import QMenu
+
+        from .pdf_ops import BULLET_STYLES, LIST_STYLES, NUMBER_STYLES
+
+        from .inline_text import list_icon, list_menu_style
+
+        self.list_menu = QMenu("Bullets and Numbering", self)
+        list_menu_style(self.list_menu)
+        self.list_group = QActionGroup(self)
+        self.list_group.setExclusionPolicy(QActionGroup.ExclusionPolicy.ExclusiveOptional)
+        self.list_actions = {}
+        for title, keys in (("Bullets", BULLET_STYLES), ("Numbering", NUMBER_STYLES)):
+            self.list_menu.addSection(title)
+            for key in keys:
+                act = self.text_format_actions.get(key)
+                if act is None:
+                    act = QAction(LIST_STYLES[key][0], self)
+                    act.setCheckable(True)
+                    act.triggered.connect(lambda _c=False, k=key: self._on_text_format(k))
+                else:
+                    act.setText(LIST_STYLES[key][0])
+                act.setIcon(list_icon(key))   # a preview of the style
+                act.setToolTip(("Bullets" if key in BULLET_STYLES else "Numbering") + ": " + LIST_STYLES[key][0])
+                self.list_group.addAction(act)
+                self.list_menu.addAction(act)
+                self.list_actions[key] = act
+        self.list_menu.addSeparator()
+        self.list_menu.addAction("No List", lambda: self._on_text_format("none"))
+        self.list_menu.aboutToShow.connect(   # redrawn: the previews follow the light / dark look
+            lambda: [a.setIcon(list_icon(k)) for k, a in self.list_actions.items()])
 
     def _set_text_spacing(self, value):
         self.text_spacing = float(value)
@@ -431,7 +626,9 @@ class MainWindow(QMainWindow):
 
     def pending_text_formats(self):
         """The formats switched on (before typing) for the next new text box."""
-        return [k for k, *_ in self.TEXT_FORMATS if self.text_format_actions[k].isChecked()]
+        formats = [k for k, *_ in self.TEXT_FORMATS if k not in self.list_actions
+                   and self.text_format_actions[k].isChecked()]
+        return formats + [k for k, act in self.list_actions.items() if act.isChecked()]
 
     def sync_text_format(self, editor):
         """The buttons show the formatting where the cursor is."""
@@ -439,12 +636,17 @@ class MainWindow(QMainWindow):
 
         style = run_style(editor.currentCharFormat())
         lst = editor.textCursor().currentList()
-        kind = editor.paras()[editor.textCursor().blockNumber()] if lst is not None else ""
+        current = editor.paras()[editor.textCursor().blockNumber()] if lst is not None else ""
         states = {"b": "b" in style, "i": "i" in style, "u": "u" in style, "s": "s" in style,
-                  "sup": style.get("v") == 1, "sub": style.get("v") == -1,
-                  "bullet": kind == "bullet", "number": kind == "number"}
+                  "sup": style.get("v") == 1, "sub": style.get("v") == -1}
         for kind, on in states.items():
             self.text_format_actions[kind].setChecked(on)
+        for kind, act in self.list_actions.items():
+            act.setChecked(kind == current)
+        if hasattr(self, "list_button"):
+            from .pdf_ops import NUMBER_STYLES
+
+            self.list_button.setIcon(icons.icon("list-ordered" if current in NUMBER_STYLES else "list-bullet"))
         self.text_align = editor.align
         act = self.text_format_actions[f"align{editor.align}"]
         act.setChecked(True)
@@ -543,6 +745,12 @@ class MainWindow(QMainWindow):
                     lambda pos, t=tool, b=btn: self._show_tool_context_menu(t, b, pos)
                 )
 
+        eraser_btn = self.tool_toolbar.widgetForAction(self.tool_actions[Tool.ERASER])
+        if eraser_btn is not None:
+            eraser_btn.setMenu(self.eraser_menu)
+            eraser_btn.setPopupMode(QToolButton.MenuButtonPopup)   # click: erase; arrow: which eraser
+        self._show_eraser_mode()
+
         self.action_select = self.tool_actions[Tool.SELECT]
         self.action_select.setChecked(True)
 
@@ -604,9 +812,7 @@ class MainWindow(QMainWindow):
         self.list_button.setPopupMode(QToolButton.InstantPopup)
         self.list_button.setToolTip("Bullets and numbering")
         self.list_button.setIcon(icons.icon("list-bullet"))
-        list_menu = QMenu(self.list_button)
-        list_menu.addActions([self.text_format_actions["bullet"], self.text_format_actions["number"]])
-        self.list_button.setMenu(list_menu)
+        self.list_button.setMenu(self.list_menu)
         format_acts.append(self.tool_toolbar.addWidget(self.list_button))
 
         self.align_button = QToolButton()
@@ -668,7 +874,7 @@ class MainWindow(QMainWindow):
         tool = self.current_tool
         visible = {
             "color": tool in STYLED_TOOLS,
-            "width": tool in WIDTH_TOOLS,
+            "width": tool in WIDTH_TOOLS or (tool == Tool.ERASER and self.eraser_mode == "point"),
             "font": tool in FONT_TOOLS and tool != Tool.FORMULA,  # maths is set in its own fonts
             "fontsize": tool in FONT_TOOLS,
             "textformat": tool == Tool.TEXTBOX,
@@ -812,6 +1018,12 @@ class MainWindow(QMainWindow):
             if g:
                 m.addSeparator()
             for tool in group:
+                if tool == Tool.ERASER:   # both erasers, then their sizes
+                    self.addAction(self.tool_actions[tool])   # E works with the ribbon hidden too
+                    m.addActions(self.eraser_group.actions())
+                    m.addMenu(self.eraser_size_menu)
+                    m.addAction(self.act_switch_eraser)
+                    continue
                 m.addAction(self.tool_actions[tool])
 
         m.addSeparator()
@@ -1228,6 +1440,8 @@ class MainWindow(QMainWindow):
         style = self.tool_styles[self.current_tool]
         self._update_color_button(QColor(*style["color"]))
         self.width_spin.blockSignals(True)
+        self.width_spin.setRange(0.5, 60.0 if self.current_tool == Tool.ERASER else 20.0)
+        self.width_spin.setToolTip("Eraser size" if self.current_tool == Tool.ERASER else "Line width")
         self.width_spin.setValue(style["width"])
         self.width_spin.blockSignals(False)
         self.font_spin.blockSignals(True)
@@ -1245,6 +1459,11 @@ class MainWindow(QMainWindow):
 
     def _set_width(self, value):
         self.current_width = value
+        if self.current_tool == Tool.ERASER:
+            self._show_eraser_mode()
+            tab = self.current_tab()
+            for pw in (tab.page_widgets if tab is not None else []):
+                pw.apply_tool_cursor()
 
     def _set_fontsize(self, value):
         self.current_fontsize = value
@@ -1348,6 +1567,10 @@ class MainWindow(QMainWindow):
             self._save_tab_as(tab)
 
     def _save_tab_as(self, tab, directory=""):
+        name = getattr(tab, "custom_name", None)
+        if name and not tab.document.path:   # renamed on its tab before it was ever saved
+            name = name if name.lower().endswith(".pdf") else name + ".pdf"
+            directory = os.path.join(directory, name) if directory and os.path.isdir(directory) else                 directory or os.path.join(os.path.expanduser("~"), "Documents", name)
         path, _ = QFileDialog.getSaveFileName(self, "Save PDF As", directory, "PDF Files (*.pdf)")
         if not path:
             return

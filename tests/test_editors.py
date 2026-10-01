@@ -155,3 +155,50 @@ def test_latex_editor_begin_end_and_comments(app):
     assert all(line.lstrip().startswith("%") for line in editor.toPlainText().splitlines() if line.strip())
     editor.insertPlainText("\\ref{")
     tab.confirm_close = lambda: True
+
+
+def test_word_ribbon_lists_case_layout_and_round_trip(app, tmp_path):
+    from docx import Document
+    from pdfannotator.word_editor import WordTab
+
+    tab = WordTab(None)
+    assert [tab.ribbon_tabs.tabText(i) for i in range(tab.ribbon_tabs.count())] == ["Home", "Insert", "Layout",
+                                                                                     "Review"]
+    tab.page.setPlainText("intro text here\nalpha\nbeta\ngamma")
+    doc = tab.document
+    cursor = tab.page.textCursor()
+    cursor.movePosition(QTextCursor.Start)
+    cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
+    tab.page.setTextCursor(cursor)
+    tab.change_case("title")
+    assert doc.firstBlock().text() == "Intro Text Here"
+    tab.grow_font(1)
+    cursor.setPosition(doc.findBlockByNumber(1).position())
+    cursor.setPosition(doc.lastBlock().position() + 1, QTextCursor.KeepAnchor)
+    tab.page.setTextCursor(cursor)
+    tab.apply_list("upper-alpha")
+    block = doc.findBlockByNumber(3)
+    assert block.textList().itemText(block) == "C."
+    cursor = QTextCursor(doc.findBlockByNumber(3))
+    tab.page.setTextCursor(cursor)
+    tab.restart_numbering()
+    assert block.textList().itemText(block) == "A."
+    tab.set_line_spacing(2.0)
+    tab.set_shading("#fff2cc")
+    tab.set_orientation(True)
+    tab.set_page(margins=(36.0, 36.0, 36.0, 36.0))
+    stats = tab.text_stats()
+    assert stats["Words"] == 6 and stats["Paragraphs"] == 4
+    out = tmp_path / "ribbon.docx"
+    tab.write(str(out))
+
+    word = Document(out)
+    section = word.sections[0]
+    assert section.page_width > section.page_height and round(section.left_margin.pt) == 36
+    xml = word.part.numbering_part.element.xml
+    assert 'w:val="upperLetter"' in xml and 'w:val="%1."' in xml
+    again = WordTab(None, str(out))
+    blocks = [again.document.findBlockByNumber(i) for i in range(4)]
+    assert [b.textList().itemText(b) if b.textList() else "" for b in blocks] == ["", "A.", "B.", "A."]
+    assert blocks[3].blockFormat().background().color().name() == "#fff2cc"
+    assert again.page_setup.width_pt > again.page_setup.height_pt

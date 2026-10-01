@@ -4,7 +4,9 @@ Reading keeps what an editor can show: paragraphs with their styles
 (headings, lists), alignment, indents and spacing; runs with bold, italic,
 underline, strike-through, font, size, colour, highlight and super/
 subscript; line and page breaks, tabs, hyperlinks, inline images and tables
-(with merged cells and shading). Formatting is resolved through the run,
+(with merged cells and shading); underline styles, capitals and small
+capitals; paragraph shading and horizontal lines; list styles (bullets,
+1. / 1) / (1), a., A., i., I. and their start numbers). Formatting is resolved through the run,
 paragraph and base styles, so the page looks the way Word shows it.
 
 Writing starts from the file that was opened (when there is one) and only
@@ -24,6 +26,8 @@ from PySide6.QtGui import (
 
 STYLE_PROP = QTextFormat.UserProperty + 1   # the paragraph's Word style name
 NUM_PROP = QTextFormat.UserProperty + 2     # "numId:ilvl" of a Word list paragraph
+OUTLINE_PROP = QTextFormat.UserProperty + 3  # on a list format: "number" / "bullet" for a multilevel list
+HR_PROP = QTextFormat.BlockTrailingHorizontalRulerWidth   # a horizontal line (an empty paragraph with a bottom border)
 PX_PER_PT = 96 / 72
 EMU_PER_PX = 9525
 _VML_IMAGEDATA = "{urn:schemas-microsoft-com:vml}imagedata"  # python-docx has no v: prefix
@@ -37,6 +41,23 @@ _NUMBER_STYLES = {
     "upperLetter": QTextListFormat.ListUpperAlpha, "lowerRoman": QTextListFormat.ListLowerRoman,
     "upperRoman": QTextListFormat.ListUpperRoman,
 }
+# bullet characters Word uses for each Qt bullet (with their fonts)
+_BULLET_CHARS = {QTextListFormat.ListDisc: ("\u2022", None), QTextListFormat.ListCircle: ("o", "Courier New"),
+                 QTextListFormat.ListSquare: ("\u00a7", "Wingdings")}
+_NUM_FORMATS = {v: k for k, v in _NUMBER_STYLES.items()}
+_UNDERLINES = {  # Word underline -> Qt underline style
+    "single": QTextCharFormat.SingleUnderline, "words": QTextCharFormat.SingleUnderline,
+    "double": QTextCharFormat.SingleUnderline, "thick": QTextCharFormat.SingleUnderline,
+    "dotted": QTextCharFormat.DotLine, "dottedHeavy": QTextCharFormat.DotLine,
+    "dash": QTextCharFormat.DashUnderline, "dashedHeavy": QTextCharFormat.DashUnderline,
+    "dashLong": QTextCharFormat.DashUnderline, "dotDash": QTextCharFormat.DashDotLine,
+    "dashDotHeavy": QTextCharFormat.DashDotLine, "dotDotDash": QTextCharFormat.DashDotDotLine,
+    "dashDotDotHeavy": QTextCharFormat.DashDotDotLine, "wave": QTextCharFormat.WaveUnderline,
+    "wavyHeavy": QTextCharFormat.WaveUnderline, "wavyDouble": QTextCharFormat.WaveUnderline,
+}
+_UNDERLINE_OUT = {QTextCharFormat.SingleUnderline: "single", QTextCharFormat.DotLine: "dotted",
+                  QTextCharFormat.DashUnderline: "dash", QTextCharFormat.DashDotLine: "dotDash",
+                  QTextCharFormat.DashDotDotLine: "dotDotDash", QTextCharFormat.WaveUnderline: "wave"}
 _HIGHLIGHTS = {
     "yellow": "#ffff00", "green": "#00ff00", "cyan": "#00ffff", "magenta": "#ff00ff", "blue": "#0000ff",
     "red": "#ff0000", "darkBlue": "#000080", "darkCyan": "#008080", "darkGreen": "#008000",
@@ -143,17 +164,25 @@ class _Reader:
 
     # ---- numbering -------------------------------------------------------
     def _load_numbering(self):
-        """{(numId, ilvl): numFmt} from numbering.xml."""
+        """{(numId, ilvl): (numFmt, lvlText, start)} from numbering.xml."""
         try:
             root = self.word.part.numbering_part.element
         except (NotImplementedError, KeyError, AttributeError):
             return {}
         abstract = {}
+
+        def val(lvl, tag, default):
+            el = lvl.find(_qn(tag))
+            return el.get(_qn("w:val")) if el is not None and el.get(_qn("w:val")) is not None else default
+
         for an in root.findall(_qn("w:abstractNum")):
             levels = {}
             for lvl in an.findall(_qn("w:lvl")):
-                fmt = lvl.find(_qn("w:numFmt"))
-                levels[lvl.get(_qn("w:ilvl"))] = fmt.get(_qn("w:val")) if fmt is not None else "decimal"
+                try:
+                    start = int(val(lvl, "w:start", "1"))
+                except ValueError:
+                    start = 1
+                levels[lvl.get(_qn("w:ilvl"))] = (val(lvl, "w:numFmt", "decimal"), val(lvl, "w:lvlText", ""), start)
             abstract[an.get(_qn("w:abstractNumId"))] = levels
         out = {}
         for num in root.findall(_qn("w:num")):
@@ -254,6 +283,15 @@ class _Reader:
         spacing = self._para_attr(para, "line_spacing", chain)
         if isinstance(spacing, float) and 0.5 <= spacing <= 4:
             bf.setLineHeight(spacing * 100, _PROPORTIONAL)
+        ppr = para._p.pPr
+        if ppr is not None:
+            shd = ppr.find(_qn("w:shd"))
+            fill = shd.get(_qn("w:fill")) if shd is not None else None
+            if fill and fill.lower() not in ("auto", "ffffff"):
+                bf.setBackground(QColor(f"#{fill}"))
+            bdr = ppr.find(_qn("w:pBdr"))
+            if bdr is not None and bdr.find(_qn("w:bottom")) is not None and not para.text.strip():
+                bf.setProperty(HR_PROP, QTextLength(QTextLength.PercentageLength, 100))
 
     def _join_list(self, cursor, num):
         existing = self.lists.get(num)
@@ -262,9 +300,21 @@ class _Reader:
         else:
             fmt = QTextListFormat()
             level = int(num[1]) if num[1].isdigit() else 0
-            kind = self._numbering.get(num, "bullet")
-            fmt.setStyle(_BULLETS[level % 3] if kind == "bullet"
-                         else _NUMBER_STYLES.get(kind, QTextListFormat.ListDecimal))
+            kind, text, start = self._numbering.get(num, ("bullet", "", 1))
+            if kind == "bullet":
+                fmt.setStyle({"o": QTextListFormat.ListCircle, "\u25e6": QTextListFormat.ListCircle,
+                              "\u00a7": QTextListFormat.ListSquare, "\u25aa": QTextListFormat.ListSquare,
+                              "\u25a0": QTextListFormat.ListSquare, "\uf0a7": QTextListFormat.ListSquare,
+                              "\u2022": QTextListFormat.ListDisc, "\uf0b7": QTextListFormat.ListDisc}.get(
+                    text, _BULLETS[level % 3]))
+            else:
+                fmt.setStyle(_NUMBER_STYLES.get(kind, QTextListFormat.ListDecimal))
+                if text.count("%") == 1:   # "(%1)" -> "(" and ")"; "%1." -> "."
+                    before, after = text.split("%")
+                    fmt.setNumberPrefix(before)
+                    fmt.setNumberSuffix(after[1:] if after[:1].isdigit() else after)
+                if start != 1:
+                    fmt.setStart(start)
             fmt.setIndent(level + 1)
             self.lists[num] = cursor.createList(fmt)
         # the list takes over the indent Word gave the paragraph
@@ -317,6 +367,15 @@ class _Reader:
                 color = None
             if attr("underline"):
                 cf.setFontUnderline(True)
+                rpr = run._r.rPr
+                u = rpr.find(_qn("w:u")) if rpr is not None else None
+                kind = u.get(_qn("w:val")) if u is not None else "single"
+                if _UNDERLINES.get(kind, QTextCharFormat.SingleUnderline) != QTextCharFormat.SingleUnderline:
+                    cf.setUnderlineStyle(_UNDERLINES[kind])
+            if attr("all_caps"):
+                cf.setFontCapitalization(QFont.AllUppercase)
+            elif attr("small_caps"):
+                cf.setFontCapitalization(QFont.SmallCaps)
             if attr("strike"):
                 cf.setFontStrikeOut(True)
             if attr("superscript"):
@@ -530,6 +589,7 @@ class _Writer:
         self.qdoc = qdoc
         self.word = word
         self.styles = {s.name for s in word.styles}
+        self._num_ids = {}   # a QTextList's objectIndex -> the Word numId written for it
 
     def write(self):
         body = self.word.element.body
@@ -572,9 +632,7 @@ class _Writer:
             wanted = f"Heading {min(level, 9)}"
             return wanted if wanted in self.styles else None
         if block.textList() is not None and not bf.property(NUM_PROP):
-            numbered = block.textList().format().style() in _NUMBER_STYLES.values()
-            wanted = "List Number" if numbered else "List Bullet"
-            return wanted if wanted in self.styles else name
+            return "List Paragraph" if "List Paragraph" in self.styles else name
         return None if is_heading_style else name
 
     def _paragraph(self, block, para):
@@ -614,16 +672,104 @@ class _Writer:
             num_pr.append(lvl_el)
             num_pr.append(id_el)
             ppr.append(num_pr)
-        elif block.textList() is not None and style not in ("List Bullet", "List Number"):
+        elif block.textList() is not None:   # a list made here: give it Word numbering of its own
             lst = block.textList()
-            marker = "• " if lst.format().style() in _BULLETS else f"{lst.itemNumber(block) + 1}. "
-            para.add_run(marker)
+            num_id = self._numbering_for(lst)
+            if num_id is None:
+                para.add_run("\u2022 " if lst.format().style() in _BULLETS else lst.itemText(block) + " ")
+            else:
+                ppr = para._p.get_or_add_pPr()
+                num_pr = OxmlElement("w:numPr")
+                lvl_el = OxmlElement("w:ilvl")
+                lvl_el.set(_qn("w:val"), str(max(0, lst.format().indent() - 1)))
+                id_el = OxmlElement("w:numId")
+                id_el.set(_qn("w:val"), str(num_id))
+                num_pr.append(lvl_el)
+                num_pr.append(id_el)
+                ppr.append(num_pr)
+        if bf.background().style() != Qt.NoBrush:
+            color = bf.background().color()
+            shd = OxmlElement("w:shd")
+            shd.set(_qn("w:val"), "clear")
+            shd.set(_qn("w:color"), "auto")
+            shd.set(_qn("w:fill"), f"{color.red():02X}{color.green():02X}{color.blue():02X}")
+            para._p.get_or_add_pPr().append(shd)
+        if bf.hasProperty(HR_PROP):
+            bdr = OxmlElement("w:pBdr")
+            bottom = OxmlElement("w:bottom")
+            for key, value in (("w:val", "single"), ("w:sz", "6"), ("w:space", "1"), ("w:color", "auto")):
+                bottom.set(_qn(key), value)
+            bdr.append(bottom)
+            para._p.get_or_add_pPr().append(bdr)
         it = block.begin()
         while not it.atEnd():
             frag = it.fragment()
             if frag.isValid():
                 self._fragment(frag, para)
             it += 1
+
+    def _numbering_for(self, lst):
+        """The numId of a Word numbering definition that looks like `lst`
+        (one per list, so each list counts from its own start)."""
+        from docx.oxml import OxmlElement
+
+        key = lst.objectIndex()
+        if key in self._num_ids:
+            return self._num_ids[key]
+        try:
+            root = self.word.part.numbering_part.element
+        except (NotImplementedError, KeyError, AttributeError):
+            return None
+        fmt = lst.format()
+        level = max(0, fmt.indent() - 1)
+        ids = [int(e.get(_qn("w:abstractNumId"))) for e in root.findall(_qn("w:abstractNum"))
+               if (e.get(_qn("w:abstractNumId")) or "").isdigit()]
+        abstract_id = max(ids, default=-1) + 1
+        num_ids = [int(e.get(_qn("w:numId"))) for e in root.findall(_qn("w:num"))
+                   if (e.get(_qn("w:numId")) or "").isdigit()]
+        num_id = max(num_ids, default=0) + 1
+
+        def el(tag, **attrs):
+            e = OxmlElement(tag)
+            for k, v in attrs.items():
+                e.set(_qn(f"w:{k}"), str(v))
+            return e
+
+        an = el("w:abstractNum", abstractNumId=abstract_id)
+        an.append(el("w:multiLevelType", val="hybridMultilevel"))
+        for ilvl in range(9):
+            lvl = el("w:lvl", ilvl=ilvl)
+            style = fmt.style() if ilvl == level else (_BULLETS[ilvl % 3] if fmt.style() in _BULLETS
+                                                         else QTextListFormat.ListDecimal)
+            lvl.append(el("w:start", val=fmt.start() if ilvl == level and fmt.start() > 0 else 1))
+            font = None
+            if style in _BULLETS:
+                char, font = _BULLET_CHARS[style]
+                lvl.append(el("w:numFmt", val="bullet"))
+                lvl.append(el("w:lvlText", val=char))
+            else:
+                lvl.append(el("w:numFmt", val=_NUM_FORMATS.get(style, "decimal")))
+                prefix, suffix = (fmt.numberPrefix(), fmt.numberSuffix()) if ilvl == level else ("", ".")
+                lvl.append(el("w:lvlText", val=f"{prefix}%{ilvl + 1}{suffix}"))
+            lvl.append(el("w:lvlJc", val="left"))
+            ppr = el("w:pPr")
+            ppr.append(el("w:ind", left=720 * (ilvl + 1), hanging=360))
+            lvl.append(ppr)
+            if font:
+                rpr = el("w:rPr")
+                rpr.append(el("w:rFonts", ascii=font, hAnsi=font, hint="default"))
+                lvl.append(rpr)
+            an.append(lvl)
+        first_num = root.find(_qn("w:num"))
+        if first_num is not None:
+            first_num.addprevious(an)      # abstract definitions come before the numbers
+        else:
+            root.append(an)
+        num = el("w:num", numId=num_id)
+        num.append(el("w:abstractNumId", val=abstract_id))
+        root.append(num)
+        self._num_ids[key] = num_id
+        return num_id
 
     def _fragment(self, frag, para):
         cf = frag.charFormat()
@@ -648,7 +794,15 @@ class _Writer:
         if cf.fontItalic():
             font.italic = True
         if cf.fontUnderline():
-            font.underline = True
+            from docx.enum.text import WD_UNDERLINE
+
+            font.underline = {"dotted": WD_UNDERLINE.DOTTED, "dash": WD_UNDERLINE.DASH,
+                              "dotDash": WD_UNDERLINE.DOT_DASH, "dotDotDash": WD_UNDERLINE.DOT_DOT_DASH,
+                              "wave": WD_UNDERLINE.WAVY}.get(_UNDERLINE_OUT.get(cf.underlineStyle()), True)
+        if cf.fontCapitalization() == QFont.AllUppercase:
+            font.all_caps = True
+        elif cf.fontCapitalization() == QFont.SmallCaps:
+            font.small_caps = True
         if cf.fontStrikeOut():
             font.strike = True
         valign = cf.verticalAlignment()
@@ -666,6 +820,12 @@ class _Writer:
             font.color.rgb = RGBColor(color.red(), color.green(), color.blue())
         if cf.hasProperty(QTextFormat.BackgroundBrush) and cf.background().style() != Qt.NoBrush:
             color = cf.background().color()
+            name = next((k for k, v in _HIGHLIGHTS.items() if v == color.name()), None)
+            if name:   # one of Word's highlighter colours: a real highlight
+                hl = OxmlElement("w:highlight")
+                hl.set(_qn("w:val"), name)
+                run._r.get_or_add_rPr().append(hl)
+                return
             shd = OxmlElement("w:shd")
             shd.set(_qn("w:val"), "clear")
             shd.set(_qn("w:color"), "auto")
@@ -751,12 +911,15 @@ def save_docx(qdoc, path, base=None, page=None):
     from docx import Document
     from docx.shared import Pt
 
+    from docx.enum.section import WD_ORIENT
+
     word = Document(base) if base and os.path.isfile(base) else Document()
-    if page is not None and not (base and os.path.isfile(base)):
-        section = word.sections[0]
-        section.page_width, section.page_height = Pt(page.width_pt), Pt(page.height_pt)
-        (section.left_margin, section.top_margin, section.right_margin,
-         section.bottom_margin) = (Pt(m) for m in page.margins_pt)
+    if page is not None:   # the size, orientation and margins set here (or read from the file)
+        for section in word.sections:
+            section.orientation = WD_ORIENT.LANDSCAPE if page.width_pt > page.height_pt else WD_ORIENT.PORTRAIT
+            section.page_width, section.page_height = Pt(page.width_pt), Pt(page.height_pt)
+            (section.left_margin, section.top_margin, section.right_margin,
+             section.bottom_margin) = (Pt(m) for m in page.margins_pt)
     _Writer(qdoc, word).write()
     folder = os.path.dirname(os.path.abspath(path))
     tmp = os.path.join(folder, f".~{os.path.basename(path)}.tmp")

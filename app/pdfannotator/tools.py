@@ -86,7 +86,18 @@ TOOL_STYLE_OVERRIDES = {
     Tool.DIMENSION: {"color": (0, 90, 200), "width": 1.5},
     Tool.TEXTBOX: {"color": (29, 36, 51), "fontsize": 14},
     Tool.FORMULA: {"color": (29, 36, 51), "fontsize": 16},
+    Tool.ERASER: {"width": 10.0},     # the Eraser's diameter, in points
 }
+
+# The two erasers (Tool.ERASER works as one or the other)
+ERASER_MODES = {
+    "point": ("Eraser", "eraser",
+              "Drag to rub out the parts of pen and marker strokes you pass over. Shapes, notes and "
+              "text boxes it touches are removed. Shift+E switches to the Stroke Eraser."),
+    "stroke": ("Stroke Eraser", "eraser-stroke",
+               "Drag over annotations to remove each one you touch, whole. Shift+E switches to the Eraser."),
+}
+ERASER_SIZES = (("Small", 4.0), ("Medium", 10.0), ("Large", 20.0), ("Extra Large", 40.0))
 
 # Named stamp icons supported natively by PyMuPDF's add_stamp_annot
 STAMP_NAMES = [
@@ -191,7 +202,7 @@ TOOL_HINTS = {
     Tool.ZOOM: "Left-click to zoom in, right-click to zoom out.",
     Tool.POLYGON: "Click to add points, double-click or Enter to finish, Escape to cancel.",
     Tool.DIMENSION: "Drag to measure and label a distance.",
-    Tool.ERASER: "Drag over annotations to erase them.",
+    Tool.ERASER: ERASER_MODES["point"][2],
     Tool.LASSO: "Drag a freehand loop to select everything inside it.",
     Tool.SNAPSHOT: "Drag a region to copy it to the clipboard as an image.",
     Tool.CROP: "Drag a region to crop the page to it.",
