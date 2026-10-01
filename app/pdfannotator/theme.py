@@ -222,7 +222,7 @@ QMenu::separator {{ height: 1px; background: {BORDER}; margin: 5px 6px; }}
 
 /* ---- toolbars: floating glass / clay bars */
 QToolBar {{ background: {s['panel']}; {panel_edges} border-radius: {br}px; margin: 3px 8px 1px 8px;
-    padding: 2px 6px; spacing: 2px; }}
+    padding: 2px 4px; spacing: 2px; }}
 QToolBar::separator {{ background: {BORDER}; width: 1px; margin: 7px 4px; }}
 QToolButton {{ background: transparent; border: 1px solid transparent; border-radius: {r}px; padding: 3px; color: {TEXT}; }}
 QToolButton:hover {{ background: {s['raised_hover']}; {raised_edges} }}

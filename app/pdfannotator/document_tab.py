@@ -957,11 +957,13 @@ class DocumentTab(QWidget):
         `width_pt` if the box was dragged out), or the existing box `annot`."""
         self.finish_text_editing()
         text, align, flags, original, runs = "", self.window.text_align, None, None, None
+        paras, spacing = None, self.window.text_spacing
         if annot is not None:
             style = pdf_ops.freetext_style(annot)
             origin_pdf = fitz.Point(annot.rect.x0, annot.rect.y0)
             width_pt = annot.rect.width if style["fixed_width"] else None
             text, align, runs = style["text"], style["align"], style["runs"]
+            paras, spacing = style["paras"], style["spacing"]
             if self.current_tool not in self.TEXT_TOOLS:
                 self.window.set_tool(Tool.TEXTBOX)
             # The toolbar shows, and live-edits, the style of the box being edited
@@ -972,7 +974,8 @@ class DocumentTab(QWidget):
             tool_style["color"] = tuple(round(c * 255) for c in style["color"])
             self.window._refresh_style_controls()
             original = (text, tool_style["fontname"], float(tool_style["fontsize"]), QColor.fromRgbF(*style["color"]).name(),
-                        pdf_ops.normalize_runs(runs or [{"t": text}]), align)
+                        pdf_ops.normalize_runs(runs or [{"t": text}]), align, pdf_ops._clean_paras(paras, text),
+                        spacing)
             # Hide the saved box while its live copy is being edited
             flags = annot.flags
             self.document.doc.xref_set_key(annot.xref, "F", str(flags | fitz.PDF_ANNOT_IS_HIDDEN))
@@ -984,14 +987,15 @@ class DocumentTab(QWidget):
             widget, QPoint(round(origin_px.x()), round(origin_px.y())), scale,
             self.current_fontname, self.current_fontsize, self.current_color,
             fixed_width_px=width_pt * scale if width_pt else None, text=text, runs=runs, align=align,
+            paras=paras, spacing=spacing,
         )
         editor.finished.connect(self.finish_text_editing)
         if annot is None:
-            for kind in self.window.pending_text_formats():   # B / I / ... switched on before typing
-                editor.toggle(kind)
+            for kind in self.window.pending_text_formats():   # B / I / bullets ... switched on before typing
+                editor.toggle_list(kind) if kind in ("bullet", "number") else editor.toggle(kind)
         editor.currentCharFormatChanged.connect(lambda _f: self.window.sync_text_format(editor))
         self.window.sync_text_format(editor)
-        format_bar = FormatBar(widget, self.window.text_format_actions, editor)
+        format_bar = FormatBar(widget, self.window.text_format_actions, editor, self.window.spacing_menu)
         editor.show()
         editor.setFocus()
         self.text_edit = {"widget": widget, "editor": editor, "origin": fitz.Point(origin_pdf), "width": width_pt,
@@ -1104,6 +1108,10 @@ class DocumentTab(QWidget):
             editor = self.text_edit["editor"]
             if kind.startswith("align"):
                 editor.set_alignment(int(kind[-1]))
+            elif kind.startswith("spacing:"):
+                editor.set_line_spacing(float(kind.split(":")[1]))
+            elif kind in ("bullet", "number"):
+                editor.toggle_list(kind)
             else:
                 editor.toggle(kind)
             editor.setFocus()
@@ -1114,10 +1122,14 @@ class DocumentTab(QWidget):
         flag = {"sup": ("v", 1), "sub": ("v", -1)}.get(kind, (kind, 1))
         for page_index, annot in boxes:
             style = pdf_ops.freetext_style(annot)
-            align = style["align"]
+            align, paras, spacing = style["align"], list(style["paras"]), style["spacing"]
             runs = [dict(r) for r in (style["runs"] or [{"t": style["text"]}])]
             if kind.startswith("align"):
                 align = int(kind[-1])
+            elif kind.startswith("spacing:"):
+                spacing = float(kind.split(":")[1])
+            elif kind in ("bullet", "number"):
+                paras = [""] * len(paras) if all(p == kind for p in paras) else [kind] * len(paras)
             else:
                 key, value = flag
                 on = not all(r.get(key) == value for r in runs if r["t"].strip())
@@ -1128,9 +1140,11 @@ class DocumentTab(QWidget):
                         r.pop(key, None)
             o = annot.rect
             width = o.width if style["fixed_width"] else None
-            w, h = pdf_ops.text_box_size(style["text"], style["fontsize"], style["fontname"], width, runs)
+            w, h = pdf_ops.text_box_size(style["text"], style["fontsize"], style["fontname"], width, runs, paras,
+                                         spacing)
             pdf_ops.set_freetext(annot, style["text"], QColor.fromRgbF(*style["color"]), style["fontsize"],
-                                 style["fontname"], fitz.Rect(o.x0, o.y0, o.x0 + w, o.y0 + h), align=align, runs=runs)
+                                 style["fontname"], fitz.Rect(o.x0, o.y0, o.x0 + w, o.y0 + h), align=align, runs=runs,
+                                 paras=paras, spacing=spacing)
         self.document.snapshot()
         for page_index in {i for i, _a in boxes}:
             self.get_page_widget(page_index).render()
@@ -1157,7 +1171,8 @@ class DocumentTab(QWidget):
         editor, widget, annot = state["editor"], state["widget"], state["annot"]
         runs = pdf_ops.rstrip_runs(editor.runs())
         text = pdf_ops.runs_text(runs)
-        align = editor.align
+        align, spacing = editor.align, editor.spacing
+        paras = pdf_ops._clean_paras(editor.paras(), text)
         fontname, fontsize, color = editor.fontname, editor.fontsize, editor.color
         editor.hide()
         editor.deleteLater()
@@ -1173,16 +1188,17 @@ class DocumentTab(QWidget):
                 page.delete_annot(annot)
                 annot = None
             elif annot is not None:
-                if state["original"] == (text, fontname, fontsize, color.name(), runs, align):
+                if state["original"] == (text, fontname, fontsize, color.name(), runs, align, paras, spacing):
                     changed = False
                 else:
-                    w, h = pdf_ops.text_box_size(text, fontsize, fontname, state["width"], runs)
+                    w, h = pdf_ops.text_box_size(text, fontsize, fontname, state["width"], runs, paras, spacing)
                     o = state["origin"]
                     pdf_ops.set_freetext(annot, text, color, fontsize, fontname,
-                                         fitz.Rect(o.x, o.y, o.x + w, o.y + h), align=align, runs=runs)
+                                         fitz.Rect(o.x, o.y, o.x + w, o.y + h), align=align, runs=runs,
+                                         paras=paras, spacing=spacing)
             elif text.strip():
                 annot = pdf_ops.add_text_box(page, state["origin"], text, color, fontsize, fontname, align=align,
-                                             width=state["width"], runs=runs)
+                                             width=state["width"], runs=runs, paras=paras, spacing=spacing)
             else:
                 widget.render()
                 self.set_hint(TOOL_HINTS.get(self.current_tool, ""))

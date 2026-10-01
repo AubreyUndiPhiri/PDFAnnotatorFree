@@ -11,15 +11,18 @@ superscript or subscript (toggle() and the usual shortcuts: Ctrl+B / I / U,
 Ctrl+Shift+= superscript, Ctrl+= subscript); runs() hands that formatting
 to pdf_ops as runs."""
 from PySide6.QtCore import QEvent, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QTextBlockFormat, QTextCharFormat, QTextCursor, QTextOption
+from PySide6.QtGui import (
+    QColor, QFont, QFontMetricsF, QTextBlockFormat, QTextCharFormat, QTextCursor, QTextListFormat, QTextOption,
+)
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QTextEdit, QToolButton
 
-from . import fonts
-from .pdf_ops import FIRST_BASELINE, normalize_runs
+from . import fonts, icons
+from .pdf_ops import FIRST_BASELINE, LIST_INDENT, normalize_runs
 
 BORDER = 1          # px, the dashed outline drawn by the style sheet
 CARET_ROOM = 6      # px kept free after the longest line so the caret shows
-_ALIGN = {0: Qt.AlignLeft, 1: Qt.AlignHCenter, 2: Qt.AlignRight}
+_ALIGN = {0: Qt.AlignLeft, 1: Qt.AlignHCenter, 2: Qt.AlignRight, 3: Qt.AlignJustify}
+_LISTS = {"bullet": QTextListFormat.ListDisc, "number": QTextListFormat.ListDecimal}
 
 
 def char_format(run):
@@ -57,7 +60,7 @@ class FormatBar(QFrame):
     below it near the top of the page), following it as it grows. They are
     the main window's text-format actions, so the toolbar agrees."""
 
-    def __init__(self, page_widget, actions, editor):
+    def __init__(self, page_widget, actions, editor, spacing_menu=None):
         super().__init__(page_widget)
         self.setObjectName("formatBar")
         self.editor = editor
@@ -65,7 +68,7 @@ class FormatBar(QFrame):
         row.setContentsMargins(6, 4, 6, 4)
         row.setSpacing(1)
         for kind, act in actions.items():
-            if kind == "align0":
+            if kind in ("align0", "bullet"):
                 rule = QFrame(self)
                 rule.setObjectName("penRule")
                 rule.setFixedSize(1, 18)
@@ -75,6 +78,16 @@ class FormatBar(QFrame):
             button = QToolButton(self)
             button.setDefaultAction(act)
             button.setFocusPolicy(Qt.NoFocus)   # typing carries on
+            button.setAutoRaise(True)
+            button.setIconSize(QSize(16, 16))
+            row.addWidget(button)
+        if spacing_menu is not None:
+            button = QToolButton(self)
+            button.setIcon(icons.icon("line-spacing"))
+            button.setToolTip("Line spacing")
+            button.setMenu(spacing_menu)
+            button.setPopupMode(QToolButton.InstantPopup)
+            button.setFocusPolicy(Qt.NoFocus)
             button.setAutoRaise(True)
             button.setIconSize(QSize(16, 16))
             row.addWidget(button)
@@ -103,7 +116,7 @@ class InlineTextEditor(QTextEdit):
     finished = Signal()
 
     def __init__(self, page_widget, origin_px, px_per_pt, fontname, fontsize, color,
-                 fixed_width_px=None, text="", runs=None, align=0):
+                 fixed_width_px=None, text="", runs=None, align=0, paras=None, spacing=1.0):
         super().__init__(page_widget)
         self.setObjectName("inlineText")
         self.setAcceptRichText(False)
@@ -120,12 +133,15 @@ class InlineTextEditor(QTextEdit):
         self.fixed_width_px = fixed_width_px
         self.fontname, self.fontsize, self.color = fontname, fontsize, QColor(color)
         self.align = 0
+        self.spacing = 1.0
 
         self.set_style(fontname, fontsize, color)
         self.setPlainText(text)
         if runs:
             self.set_runs(runs)
+        self.set_paras(paras)
         self.set_alignment(align)
+        self.set_line_spacing(spacing)
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.End)
         self.setTextCursor(cursor)
@@ -138,6 +154,7 @@ class InlineTextEditor(QTextEdit):
         font = fonts.preview_font(fontname, round(self.fontsize * self._px_per_pt))
         self.setFont(font)
         self.document().setDefaultFont(font)
+        self.document().setIndentWidth(LIST_INDENT * self.fontsize * self._px_per_pt)   # lists indent as in the PDF
         self.setStyleSheet(f"QTextEdit#inlineText {{ color: {self.color.name()}; }}")
         self._fit()
 
@@ -192,6 +209,66 @@ class InlineTextEditor(QTextEdit):
         self.mergeCurrentCharFormat(fmt)
         self._fit()
 
+    # ---- lists and line spacing (paragraph-level)
+    def paras(self):
+        """Per paragraph: "bullet", "number" or ""."""
+        out = []
+        block = self.document().begin()
+        while block.isValid():
+            lst = block.textList()
+            style = lst.format().style() if lst else None
+            out.append(next((k for k, v in _LISTS.items() if v == style), ""))
+            block = block.next()
+        return out
+
+    def set_paras(self, paras):
+        block, current, kind_of = self.document().begin(), None, None
+        for kind in paras or []:
+            if not block.isValid():
+                break
+            if kind in _LISTS:
+                if current is not None and kind_of == kind:
+                    current.add(block)
+                else:
+                    fmt = QTextListFormat()
+                    fmt.setStyle(_LISTS[kind])
+                    current, kind_of = QTextCursor(block).createList(fmt), kind
+            else:
+                current = kind_of = None
+            block = block.next()
+        self._fit()
+
+    def toggle_list(self, kind):
+        """Bullets or numbering on the paragraphs of the selection (off again
+        when they already have it)."""
+        cursor = self.textCursor()
+        lst = cursor.currentList()
+        if lst is not None and lst.format().style() == _LISTS[kind]:
+            start, end = sorted((cursor.selectionStart(), cursor.selectionEnd()))
+            block = self.document().findBlock(start)
+            while block.isValid() and block.position() <= end:
+                if block.textList() is not None:
+                    block.textList().remove(block)
+                    fmt = block.blockFormat()
+                    fmt.setIndent(0)
+                    QTextCursor(block).setBlockFormat(fmt)
+                block = block.next()
+        else:
+            fmt = QTextListFormat()
+            fmt.setStyle(_LISTS[kind])
+            cursor.createList(fmt)
+        self.currentCharFormatChanged.emit(self.currentCharFormat())   # the buttons follow
+        self._fit()
+
+    def set_line_spacing(self, spacing):
+        self.spacing = float(spacing or 1.0)
+        cursor = QTextCursor(self.document())
+        cursor.select(QTextCursor.Document)
+        block = QTextBlockFormat()
+        block.setLineHeight(self.spacing * 100, QTextBlockFormat.ProportionalHeight.value)
+        cursor.mergeBlockFormat(block)
+        self._fit()
+
     def set_alignment(self, align):
         self.align = int(align or 0)
         cursor = QTextCursor(self.document())
@@ -199,6 +276,7 @@ class InlineTextEditor(QTextEdit):
         block = QTextBlockFormat()
         block.setAlignment(_ALIGN.get(self.align, Qt.AlignLeft))
         cursor.mergeBlockFormat(block)
+        self._fit()
 
     # ---- geometry
     def _fit(self):

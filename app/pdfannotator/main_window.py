@@ -347,7 +347,12 @@ class MainWindow(QMainWindow):
 
     TEXT_FORMATS = (("b", "Bold", "bold", "Ctrl+B"), ("i", "Italic", "italic", "Ctrl+I"),
                     ("u", "Underline", "text-underline", "Ctrl+U"), ("s", "Strikethrough", "strikeout", ""),
-                    ("sup", "Superscript", "superscript", "Ctrl+Shift+="), ("sub", "Subscript", "subscript", "Ctrl+="))
+                    ("sup", "Superscript", "superscript", "Ctrl+Shift+="), ("sub", "Subscript", "subscript", "Ctrl+="),
+                    ("bullet", "Bullets", "list-bullet", ""), ("number", "Numbering", "list-ordered", ""))
+    LINE_SPACINGS = (1.0, 1.15, 1.5, 2.0, 2.5, 3.0)
+    # Underline and Strikethrough of typed text live in the floating format bar
+    # (and Ctrl+U): the ribbon already has the Underline / Strikeout markup tools
+    RIBBON_TEXT_FORMATS = ("b", "i", "sup", "sub")   # + one list menu, one alignment menu, one spacing menu
 
     def _create_text_format_actions(self):
         """Bold, italic, underline, strikethrough, superscript, subscript and
@@ -364,7 +369,7 @@ class MainWindow(QMainWindow):
         self.text_align = 0
         self.align_group = QActionGroup(self)
         for align, (label, icon) in enumerate((("Align Left", "align-left"), ("Centre", "align-center"),
-                                               ("Align Right", "align-right"))):
+                                               ("Align Right", "align-right"), ("Justify", "align-justify"))):
             act = QAction(icons.icon(icon), label, self)
             act.setCheckable(True)
             act.setChecked(align == 0)
@@ -372,6 +377,49 @@ class MainWindow(QMainWindow):
             act.triggered.connect(lambda _c=False, a=align: self._on_text_format(f"align{a}"))
             self.align_group.addAction(act)
             self.text_format_actions[f"align{align}"] = act
+        # line spacing: a menu of common spacings and Custom...
+        from PySide6.QtWidgets import QMenu
+
+        self.text_spacing = 1.0
+        self.spacing_menu = QMenu("Line Spacing", self)
+        self.spacing_group = QActionGroup(self)
+        for value in self.LINE_SPACINGS:
+            act = self.spacing_menu.addAction(f"{value:g}")
+            act.setCheckable(True)
+            act.setChecked(value == 1.0)
+            act.setData(value)
+            act.triggered.connect(lambda _c=False, v=value: self._set_text_spacing(v))
+            self.spacing_group.addAction(act)
+        self.spacing_menu.addSeparator()
+        self.spacing_custom = self.spacing_menu.addAction("Custom...")
+        self.spacing_custom.setCheckable(True)
+        self.spacing_group.addAction(self.spacing_custom)
+        self.spacing_custom.triggered.connect(self._custom_text_spacing)
+
+    def _set_text_spacing(self, value):
+        self.text_spacing = float(value)
+        self._show_text_spacing(value)
+        self._on_text_format(f"spacing:{value:g}")
+
+    def _custom_text_spacing(self):
+        from PySide6.QtWidgets import QInputDialog
+
+        value, ok = QInputDialog.getDouble(self, "Line Spacing", "Line spacing (times the normal line height):",
+                                           self.text_spacing, 0.5, 5.0, 2)
+        if ok:
+            self._set_text_spacing(value)
+        else:
+            self._show_text_spacing(self.text_spacing)
+
+    def _show_text_spacing(self, value):
+        """Tick the spacing in the menu (Custom... for anything else)."""
+        for act in self.spacing_group.actions():
+            if act is not self.spacing_custom and abs(act.data() - value) < 1e-3:
+                act.setChecked(True)
+                self.spacing_custom.setText("Custom...")
+                return
+        self.spacing_custom.setChecked(True)
+        self.spacing_custom.setText(f"Custom ({value:g})...")
 
     def _on_text_format(self, kind):
         tab = self.current_tab()
@@ -390,8 +438,11 @@ class MainWindow(QMainWindow):
         from .inline_text import run_style
 
         style = run_style(editor.currentCharFormat())
+        lst = editor.textCursor().currentList()
+        kind = editor.paras()[editor.textCursor().blockNumber()] if lst is not None else ""
         states = {"b": "b" in style, "i": "i" in style, "u": "u" in style, "s": "s" in style,
-                  "sup": style.get("v") == 1, "sub": style.get("v") == -1}
+                  "sup": style.get("v") == 1, "sub": style.get("v") == -1,
+                  "bullet": kind == "bullet", "number": kind == "number"}
         for kind, on in states.items():
             self.text_format_actions[kind].setChecked(on)
         self.text_align = editor.align
@@ -399,6 +450,8 @@ class MainWindow(QMainWindow):
         act.setChecked(True)
         if hasattr(self, "align_button"):
             self.align_button.setIcon(act.icon())
+        self.text_spacing = editor.spacing
+        self._show_text_spacing(editor.spacing)
 
     @staticmethod
     def _spacer(width=None):
@@ -521,29 +574,40 @@ class MainWindow(QMainWindow):
         self.font_family_combo = QComboBox()
         fonts.fill_font_combo(self.font_family_combo, offer_create=True)
         self.font_family_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.font_family_combo.setMinimumContentsLength(12)   # not as wide as the longest font name
-        self.font_family_combo.setMinimumWidth(140)
+        self.font_family_combo.setMinimumContentsLength(9)   # not as wide as the longest font name
+        self.font_family_combo.setMinimumWidth(116)
         self.font_family_combo.setToolTip("Font (type to search)")
         self.font_family_combo.textActivated.connect(self._on_font_picked)
         prop("font", None, self.font_family_combo)   # the tooltip names it
 
         self.font_spin = QSpinBox()
         self.font_spin.setRange(6, 96)
+        self.font_spin.setFixedWidth(76)
         self.font_spin.setSuffix(" pt")
         self.font_spin.setToolTip("Font size")
         self.font_spin.valueChanged.connect(self._set_fontsize)
         prop("fontsize", None, self.font_spin)
 
         format_acts = [self.tool_toolbar.addWidget(self._spacer(4))]
-        for kind, act in self.text_format_actions.items():
-            if kind.startswith("align"):
-                continue
+        for kind in self.RIBBON_TEXT_FORMATS:
+            act = self.text_format_actions[kind]
             button = QToolButton()
             button.setDefaultAction(act)
             button.setFocusPolicy(Qt.NoFocus)      # the text being typed keeps the focus
             format_acts.append(self.tool_toolbar.addWidget(button))
-        # the three alignments share one button (its menu), to keep the toolbar short
+        # bullets / numbering, the alignments and the spacings each share one
+        # button (its menu), to keep the toolbar short
         from PySide6.QtWidgets import QMenu
+
+        self.list_button = QToolButton()
+        self.list_button.setFocusPolicy(Qt.NoFocus)
+        self.list_button.setPopupMode(QToolButton.InstantPopup)
+        self.list_button.setToolTip("Bullets and numbering")
+        self.list_button.setIcon(icons.icon("list-bullet"))
+        list_menu = QMenu(self.list_button)
+        list_menu.addActions([self.text_format_actions["bullet"], self.text_format_actions["number"]])
+        self.list_button.setMenu(list_menu)
+        format_acts.append(self.tool_toolbar.addWidget(self.list_button))
 
         self.align_button = QToolButton()
         self.align_button.setFocusPolicy(Qt.NoFocus)
@@ -555,6 +619,13 @@ class MainWindow(QMainWindow):
         self.align_group.triggered.connect(lambda act: self.align_button.setIcon(act.icon()))
         self.align_button.setIcon(self.text_format_actions["align0"].icon())
         format_acts.append(self.tool_toolbar.addWidget(self.align_button))
+        self.spacing_button = QToolButton()
+        self.spacing_button.setFocusPolicy(Qt.NoFocus)
+        self.spacing_button.setPopupMode(QToolButton.InstantPopup)
+        self.spacing_button.setIcon(icons.icon("line-spacing"))
+        self.spacing_button.setToolTip("Line spacing")
+        self.spacing_button.setMenu(self.spacing_menu)
+        format_acts.append(self.tool_toolbar.addWidget(self.spacing_button))
         self._property_actions["textformat"] = format_acts
 
         self.stamp_combo = QComboBox()

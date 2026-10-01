@@ -216,3 +216,44 @@ def test_formatting_survives_save_copy_and_odd_characters(window, tmp_path):
     text = reopened[0].get_text()
     assert "—" in text and "€5" in text                           # drawn with real glyphs
     assert any(pdf_ops.rich_runs(a) for a in reopened[0].annots() if pdf_ops.is_text_box(a))
+
+
+def test_bullets_numbering_justify_and_line_spacing(window, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    w, tab = window
+    w.set_tool(Tool.TEXTBOX)
+    tab.begin_text_edit(tab.page_widgets[0], origin_pdf=fitz.Point(60, 500), width_pt=220)
+    editor = tab.text_edit["editor"]
+    editor.insertPlainText("Steps")
+    editor.insertPlainText("\n")
+    w.text_format_actions["number"].trigger()
+    editor.insertPlainText("Open the file\nSign it on the last page")
+    w.text_format_actions["align3"].trigger()
+    monkeypatch.setattr(QInputDialog, "getDouble", staticmethod(lambda *a, **k: (1.8, True)))
+    w._custom_text_spacing()
+    annot = tab.finish_text_editing()
+    style = pdf_ops.freetext_style(annot)
+    assert style["paras"] == ["", "number", "number"]
+    assert style["align"] == pdf_ops.JUSTIFY and style["spacing"] == pytest.approx(1.8)
+    assert "Custom (1.8)" in w.spacing_custom.text()
+    # the selected box: bullets on every paragraph, then off again
+    tab.selected = [(0, annot)]
+    tab.format_text("bullet")
+    box = next(a for a in tab.page_widgets[0].page().annots() if a.xref == annot.xref)
+    assert pdf_ops.freetext_style(box)["paras"] == ["bullet"] * 3
+    tab.format_text("bullet")
+    assert pdf_ops.freetext_style(box)["paras"] == [""] * 3
+    tab.format_text("spacing:1")
+    assert pdf_ops.freetext_style(box)["spacing"] == 1.0
+
+
+def test_ribbon_has_no_duplicate_underline_or_strike(window):
+    w, _tab = window
+    ribbon_actions = set()
+    for act in w.tool_toolbar.actions():
+        widget = w.tool_toolbar.widgetForAction(act)
+        if widget is not None and hasattr(widget, "defaultAction") and widget.defaultAction():
+            ribbon_actions.add(widget.defaultAction())
+    assert w.text_format_actions["u"] not in ribbon_actions and w.text_format_actions["s"] not in ribbon_actions
+    assert w.text_format_actions["b"] in ribbon_actions                # the rest are there
