@@ -39,8 +39,8 @@ def sample_pdf():
     return doc.tobytes()
 
 
-def test_pdf_to_latex_project(sample_pdf, tmp_path):
-    converter = pdf_to_latex.PdfToLatex(sample_pdf, ocr=docx_export.OCR_NONE)
+def test_pdf_to_latex_project_flowing(sample_pdf, tmp_path):
+    converter = pdf_to_latex.PdfToLatex(sample_pdf, ocr=docx_export.OCR_NONE, layout=pdf_to_latex.LAYOUT_FLOW)
     report = converter.run(tmp_path / "proj")
     tex = converter.tex_path.read_text(encoding="utf-8")
     assert report.converted == [1] and report.pictures == [2]
@@ -51,10 +51,48 @@ def test_pdf_to_latex_project(sample_pdf, tmp_path):
     assert tex.count(r"\begin{document}") == 1 and tex.rstrip().endswith(r"\end{document}")
 
 
-def test_pdf_to_word(sample_pdf, tmp_path):
+def test_pdf_to_word_flowing(sample_pdf, tmp_path):
     out = tmp_path / "out.docx"
-    report = docx_export.PdfToDocx(sample_pdf, ocr=docx_export.OCR_NONE).run(out)
+    report = docx_export.PdfToDocx(sample_pdf, ocr=docx_export.OCR_NONE, layout=docx_export.LAYOUT_FLOW).run(out)
     assert out.stat().st_size > 0 and report.converted == [1] and report.pictures == [2]
+
+
+def test_pdf_to_latex_exact_layout(sample_pdf, tmp_path):
+    from pdfannotator.latex import engines
+
+    converter = pdf_to_latex.PdfToLatex(sample_pdf, ocr=docx_export.OCR_NONE)
+    report = converter.run(tmp_path / "exact")
+    tex = converter.tex_path.read_text(encoding="utf-8")
+    assert report.converted == [1] and report.pictures == [2]
+    assert r"\PDFPage{1}{%" in tex and r"\PDFPage{2}{%" in tex        # both pages have a background
+    assert "Quarterly Report}%" in tex and r"15\% \& profit was \$2,000 for item\_\#3." in tex
+    assert r"\PTW{72}{752}" in tex                                    # 842 - 90: baseline from the bottom
+    bg = fitz.open(tmp_path / "exact" / "background.pdf")
+    assert bg.page_count == 2 and not bg[0].get_text().strip()          # the text is typed, not in the picture
+    assert bg[0].get_drawings()                                         # the table's borders are kept
+    xelatex = engines.find_program("xelatex")
+    if xelatex:   # it really compiles, and the text lands where it was
+        import subprocess
+
+        subprocess.run([xelatex, "-interaction=nonstopmode", "main.tex"], cwd=tmp_path / "exact",
+                       capture_output=True, timeout=240)
+        out = fitz.open(tmp_path / "exact" / "main.pdf")
+        assert out.page_count == 2
+        words = {w[4]: w for w in out[0].get_text("words")}
+        assert abs(words["Quarterly"][0] - 72) < 0.6 and abs(words["Alice"][0] - 76) < 0.6
+
+
+def test_pdf_to_word_exact_layout(sample_pdf, tmp_path):
+    from docx import Document
+
+    out = tmp_path / "exact.docx"
+    report = docx_export.PdfToDocx(sample_pdf, ocr=docx_export.OCR_NONE).run(out)
+    assert report.converted == [1] and report.pictures == [2]
+    word = Document(out)
+    xml = word.element.body.xml
+    assert xml.count("w:framePr") >= 6                                 # one frame per line or table cell row
+    assert "Quarterly" in xml and "behindDoc=\"1\"" in xml            # text, over its background picture
+    assert len(word.sections) == 2 and round(word.sections[0].page_width.pt) == 595
 
 
 def test_got_ocr_latex_keeps_math_and_escapes_the_rest():

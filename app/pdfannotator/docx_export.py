@@ -1,5 +1,13 @@
 """Convert a PDF to an editable Word document (.docx).
 
+Two layouts:
+
+- Exact (the default): every page looks the way it did. Its graphics are a
+  picture behind the text and every line is a Word frame at its original
+  spot, in a matching font, each word where it was (exact_docx.py).
+- Flowing: paragraphs and tables rebuilt by pdf2docx (below), easier to
+  rewrite but only roughly like the original.
+
 - Typed pages (with a text layer) go through pdf2docx, which rebuilds the
   paragraphs, fonts, colours, tables and images.
 - Scanned pages (a picture of the page, no text) are read with OCR and
@@ -38,6 +46,7 @@ OCR_CHOICES = {
 }
 ENGINE_LABELS = {OCR_TESSERACT: "Tesseract", OCR_GOT: "GOT-OCR 2.0", OCR_TROCR: "TrOCR"}
 
+LAYOUT_EXACT, LAYOUT_FLOW = "exact", "flow"
 OCR_DPI = 300
 PICTURE_DPI = 150
 OCR_MARGIN_PT = 54  # 0.75 in, for pages rebuilt from OCR text
@@ -239,8 +248,9 @@ class PdfToDocx:
     from another thread and makes run() raise ConversionCancelled."""
 
     def __init__(self, source, pages=None, password=None, ocr=OCR_AUTO, include_annotations=True,
-                 keep_scan_images=False, progress=None):
+                 keep_scan_images=False, progress=None, layout=LAYOUT_EXACT):
         self.source = source
+        self.layout = layout
         self.pages = pages
         self.password = password
         self.ocr = ocr
@@ -299,6 +309,8 @@ class PdfToDocx:
         self.report.pages = len(indexes)
         scanned = {i for i in indexes if is_scanned(doc[i])}
         typed = [i for i in indexes if i not in scanned]
+        if self.layout == LAYOUT_EXACT:
+            return self._run_exact(doc, indexes, scanned, out_path)
 
         parsed = self._parse_typed(doc, typed) if typed else {}
         ocr_results = self._ocr_scanned(doc, [i for i in indexes if i in scanned]) if scanned else {}
@@ -315,6 +327,52 @@ class PdfToDocx:
             else:
                 self._write_picture(word, doc[i])
                 self.report.pictures.append(i + 1)
+        self._save(word, out_path)
+        self.progress(1.0, "Done")
+        return self.report
+
+    def _run_exact(self, doc, indexes, scanned, out_path):
+        """Every typed page laid out exactly (see exact_docx.py); scanned pages
+        are read with OCR as before (or kept as pictures)."""
+        from docx import Document
+
+        from . import exact_docx, exact_layout
+
+        ocr_results = self._ocr_scanned(doc, [i for i in indexes if i in scanned]) if scanned else {}
+        word = Document()
+        writer = exact_docx.ExactDocx(word)
+        typed = [i for i in indexes if i not in scanned]
+        layouts = {}
+        for n, i in enumerate(typed):
+            self._check_cancel()
+            self.progress(0.03 + 0.3 * n / max(1, len(typed)), f"Reading page {i + 1} ({n + 1} of {len(typed)})...")
+            try:
+                layouts[i] = exact_layout.read_page(doc[i])
+            except Exception as e:  # noqa: BLE001 - that page becomes a picture
+                self.report.warnings.append(f"The text of page {i + 1} could not be read ({e}).")
+        with_background = [i for i in typed if i in layouts and (layouts[i].has_background or
+                                                                 layouts[i].invisible_text)]
+        backgrounds = exact_layout.text_free_copy(doc, with_background) if with_background else None
+        for n, i in enumerate(indexes):
+            self._check_cancel()
+            self.progress(0.35 + 0.6 * n / len(indexes), f"Laying out page {i + 1} ({n + 1} of {len(indexes)})...")
+            if i in layouts and not layouts[i].invisible_text:
+                png = None
+                if i in with_background:
+                    png = exact_docx.background_png(backgrounds[with_background.index(i)])
+                try:
+                    writer.page(doc[i], layouts[i], png)
+                    self.report.converted.append(i + 1)
+                    continue
+                except Exception as e:  # noqa: BLE001
+                    self.report.warnings.append(f"Page {i + 1} could not be laid out ({e}).")
+            if i in ocr_results:
+                self._write_blocks(word, doc[i], ocr_results[i])
+                self.report.ocr.append(i + 1)
+            else:
+                self._write_picture(word, doc[i])
+                self.report.pictures.append(i + 1)
+        self.progress(0.97, "Writing the Word document...")
         self._save(word, out_path)
         self.progress(1.0, "Done")
         return self.report

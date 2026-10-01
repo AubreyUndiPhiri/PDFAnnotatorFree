@@ -151,7 +151,7 @@ Single-letter shortcuts are shown in brackets.
   right-click it > Rename, to rename the document: a saved file is renamed
   on disk, an unsaved one keeps the name for Save), Save / Save As / Save All
   / Save as Template, Combine Files, Split Every Page to Separate Files,
-  Convert to Word, Convert to LaTeX,
+  Convert to Word, Convert to LaTeX (see "Converting PDFs" below),
   Properties (metadata), Send Mail (opens your mail client; attach the file
   yourself, Windows can't do it automatically), Print, Close / Close All,
   Exit.
@@ -267,6 +267,37 @@ The **Google Drive** menu (code in `app/pdfannotator/cloud/`):
   the PDF is saved (and synced, if it's a Drive file). *Signature Requests*
   lists them, with copy link, cancel and check now. Links expire after the
   days you choose and work once.
+
+## Converting PDFs to Word and LaTeX
+
+File > Convert to Word / Convert to LaTeX. The **Exact** layout (the
+default) keeps the document looking just as it does in the PDF:
+
+- The page's lines, table borders, charts and pictures are kept as they are:
+  for LaTeX as a vector copy of the page with its text taken out
+  (`background.pdf`), for Word as a sharp picture behind the text.
+- Every line of text is retyped over it, at its original position, in a
+  matching font: Helvetica / Nimbus Sans, Times and Courier become TeX Gyre
+  Heros, Termes and Cursor (LaTeX) or Arial, Times New Roman and Courier New
+  (Word), which have the same letter widths; Computer Modern documents use
+  Latin Modern in the right design size, with Latin Modern Math (LaTeX) or
+  Cambria Math (Word) for the maths; other fonts are used by name when
+  Windows has them. Justified lines are spread to their original width
+  (LaTeX) or each word is placed where it was (Word).
+- Maths keeps its letters and symbols (math italic, Greek, blackboard bold
+  ℝ ℕ ℤ, operators); the few glyphs Unicode has no code for at their size
+  (display integrals, big brackets) are kept as sharp pictures. Links stay
+  clickable (LaTeX).
+- LaTeX: `\PT{x}{y}{text}` puts text with its baseline at (x, y) points from
+  the page's lower-left corner (`\PTW` also gives the width): edit the text
+  in place and compile with XeLaTeX. The project opens and compiles at once
+  in the LaTeX tab (F5 compiles from anywhere in the tab).
+- Word: each line is a frame placed on the page; open the file in Microsoft
+  Word to see it exactly (the Word editor here shows the text in order).
+
+The **Flowing** layout rebuilds headings, paragraphs and tables that reflow
+as you type (easier to rewrite, only roughly like the PDF). Scanned pages are
+read with OCR in both.
 
 ## Word and LaTeX editors
 

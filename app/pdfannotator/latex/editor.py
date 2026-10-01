@@ -23,7 +23,7 @@ from PySide6.QtCore import (
     QTimer, QUrl, Signal,
 )
 from PySide6.QtGui import (
-    QAction, QColor, QDesktopServices, QFont, QFontDatabase, QImage, QKeySequence, QPainter, QPixmap,
+    QAction, QColor, QDesktopServices, QFont, QFontDatabase, QImage, QKeySequence, QPainter, QPixmap, QShortcut,
     QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextFormat,
 )
 from PySide6.QtWidgets import (
@@ -622,6 +622,60 @@ class CodeEditor(QPlainTextEdit):
 
 
 # --------------------------------------------------------------------------
+# Running the compiler
+# --------------------------------------------------------------------------
+
+def compiler_environment():
+    """The environment for TeX: the user's own, without what the packaged app
+    (PyInstaller) adds for itself (its folder on PATH, its Qt / Tcl
+    settings), which can make MiKTeX or TeX Live load the wrong DLLs."""
+    import sys
+
+    env = QProcessEnvironment.systemEnvironment()
+    bundle = getattr(sys, "_MEIPASS", None)
+    if bundle:
+        here = os.path.normcase(os.path.abspath(bundle))
+        parts = [p for p in env.value("PATH", "").split(os.pathsep)
+                 if p and not os.path.normcase(os.path.abspath(p)).startswith(here)]
+        env.insert("PATH", os.pathsep.join(parts))
+        for key in env.keys():
+            if key.startswith(("_PYI", "_MEI")) or key in ("QT_PLUGIN_PATH", "QML2_IMPORT_PATH", "TCL_LIBRARY",
+                                                          "TK_LIBRARY", "SSL_CERT_FILE", "PYTHONHOME"):
+                env.remove(key)
+    env.insert("max_print_line", "1000")  # one log line per message, easier to read
+    return env
+
+
+class _plain_dll_search:
+    """While starting the compiler, Windows looks for DLLs the normal way:
+    the packaged app points the search at its own folder, and child
+    processes would inherit that."""
+
+    def __enter__(self):
+        import sys
+
+        self.bundle = getattr(sys, "_MEIPASS", None) if os.name == "nt" else None
+        if self.bundle:
+            try:
+                import ctypes
+
+                ctypes.windll.kernel32.SetDllDirectoryW(None)
+            except Exception:  # noqa: BLE001
+                self.bundle = None
+        return self
+
+    def __exit__(self, *exc):
+        if self.bundle:
+            try:
+                import ctypes
+
+                ctypes.windll.kernel32.SetDllDirectoryW(self.bundle)
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+
+
+# --------------------------------------------------------------------------
 # PDF preview
 # --------------------------------------------------------------------------
 
@@ -925,6 +979,11 @@ class LatexTab(EditorTab):
         layout.setSpacing(0)
         layout.addWidget(self._build_toolbar())
         layout.addWidget(self.split, 1)
+        # F5 / Ctrl+Enter compile wherever the focus is in this tab (the preview, the file list...)
+        for keys in ("F5", "Ctrl+Return"):
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(self.compile)
 
         self.watcher = QFileSystemWatcher(self)
         self.watcher.fileChanged.connect(self._file_changed_outside)
@@ -1204,9 +1263,7 @@ class LatexTab(EditorTab):
         self.process = QProcess(self)
         self.process.setWorkingDirectory(os.path.dirname(root))
         self.process.setProcessChannelMode(QProcess.MergedChannels)
-        env = QProcessEnvironment.systemEnvironment()
-        env.insert("max_print_line", "1000")  # one log line per message, easier to read
-        self.process.setProcessEnvironment(env)
+        self.process.setProcessEnvironment(compiler_environment())
         self.process.readyReadStandardOutput.connect(self._read_output)
         self.process.finished.connect(lambda code, _status: self._compiled(code, root))
         self.process.errorOccurred.connect(self._process_error)
@@ -1214,7 +1271,8 @@ class LatexTab(EditorTab):
         self.compile_act.setEnabled(False)
         self.stop_act.setEnabled(True)
         self._set_status(f"Compiling with {self.engine_combo.currentText().split(' (')[0]}...")
-        self.process.start(argv[0], argv[1:])
+        with _plain_dll_search():
+            self.process.start(argv[0], argv[1:])
 
     def _read_output(self):
         if self.process is None:

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLineEdit, QMessageBox,
+    QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
     QProgressDialog, QPushButton,
 )
 
@@ -16,11 +16,19 @@ from .dialogs import _button_row, _dialog_layout, _header, _primary
 WORD, LATEX = "word", "latex"
 _TITLES = {WORD: "Convert to Word", LATEX: "Convert to LaTeX"}
 _SUBTITLES = {
-    WORD: "Creates an editable .docx file. Scanned pages are read with OCR; anything that can't be "
-          "converted is kept as a picture of the page.",
-    LATEX: "Creates a LaTeX project folder (main.tex and images). Compile it with XeLaTeX, for "
-           "example on Overleaf. Scanned pages are read with OCR.",
+    WORD: "Creates an editable .docx file that looks like the PDF. Scanned pages are read with OCR; "
+          "anything that can't be converted is kept as a picture of the page.",
+    LATEX: "Creates a LaTeX project folder (main.tex and its files) that looks like the PDF. Compile it "
+           "with XeLaTeX (it opens and compiles straight away here, or use Overleaf).",
 }
+LAYOUTS = (
+    (docx_export.LAYOUT_EXACT, "Exact: looks just like the PDF (recommended)",
+     "Every line stays where it was, in a matching font and size; lines, tables, charts and pictures "
+     "are kept exactly. Edit the text in place."),
+    (docx_export.LAYOUT_FLOW, "Flowing: paragraphs that reflow (easier to rewrite)",
+     "Rebuilt as headings, paragraphs and tables that reflow as you type; the look is only roughly "
+     "like the PDF."),
+)
 
 
 def default_output(fmt, pdf_path, name) -> str:
@@ -57,6 +65,22 @@ class ConvertDialog(QDialog):
         self.pages_edit.setPlaceholderText(f"All {page_count} pages, or for example 1-3, 5")
         form.addRow("Pages", self.pages_edit)
 
+        self.layout_combo = QComboBox()
+        for key, label, tip in LAYOUTS:
+            self.layout_combo.addItem(label, key)
+            self.layout_combo.setItemData(self.layout_combo.count() - 1, tip, Qt.ToolTipRole)
+        from . import theme
+
+        saved = theme._settings().value(f"convert/{fmt}_layout", docx_export.LAYOUT_EXACT)
+        self.layout_combo.setCurrentIndex(max(0, self.layout_combo.findData(saved)))
+        self.layout_note = QLabel()
+        self.layout_note.setObjectName("muted")
+        self.layout_note.setWordWrap(True)
+        self.layout_combo.currentIndexChanged.connect(self._show_layout_note)
+        self._show_layout_note()
+        form.addRow("Layout", self.layout_combo)
+        form.addRow("", self.layout_note)
+
         self.ocr_combo = QComboBox()
         for key, label in docx_export.OCR_CHOICES.items():
             self.ocr_combo.addItem(label, key)
@@ -74,6 +98,9 @@ class ConvertDialog(QDialog):
         ok_btn = _primary("Convert")
         ok_btn.clicked.connect(self.accept)
         layout.addLayout(_button_row(cancel_btn, ok_btn))
+
+    def _show_layout_note(self, *_):
+        self.layout_note.setText(LAYOUTS[max(0, self.layout_combo.currentIndex())][2])
 
     def _browse(self):
         current = self.output_edit.text().strip()
@@ -105,10 +132,14 @@ class ConvertDialog(QDialog):
                                         QMessageBox.Yes | QMessageBox.No)
             if resp != QMessageBox.Yes:
                 return
+        from . import theme
+
+        theme._settings().setValue(f"convert/{self.fmt}_layout", self.layout_combo.currentData())
         super().accept()
 
     def options(self) -> dict:
         return {
+            "layout": self.layout_combo.currentData(),
             "pages": self.pages,
             "ocr": self.ocr_combo.currentData(),
             "include_annotations": self.annots_check.isChecked(),
@@ -189,10 +220,18 @@ def convert(parent, fmt, pdf_bytes, pdf_path, name, page_count):
             text += "\n\n" + "\n".join(f"• {w}" for w in report.warnings[:8])
             if len(report.warnings) > 8:
                 text += f"\n• ...and {len(report.warnings) - 8} more"
+        exact_word = fmt == WORD and getattr(converter, "layout", "") == docx_export.LAYOUT_EXACT
+        if exact_word:
+            text += ("\n\nOpen it in Microsoft Word to see it exactly as the PDF; the Word editor here shows "
+                     "its text in order but not each line's position.")
         box = QMessageBox(QMessageBox.Information, _TITLES[fmt], text, parent=parent)
+        open_btn = box.addButton("Open in Word", QMessageBox.AcceptRole) if exact_word else None
         here_btn = box.addButton("Open in the Word Editor" if fmt == WORD else "Open in the LaTeX Editor",
-                                 QMessageBox.AcceptRole)
-        open_btn = box.addButton("Open in Word", QMessageBox.ActionRole) if fmt == WORD else None
+                                 QMessageBox.ActionRole if exact_word else QMessageBox.AcceptRole)
+        if fmt == WORD and not exact_word:
+            open_btn = box.addButton("Open in Word", QMessageBox.ActionRole)
+        if open_btn is not None and exact_word:
+            box.setDefaultButton(open_btn)
         folder_btn = box.addButton("Open Folder", QMessageBox.ActionRole)
         box.addButton(QMessageBox.Close)
         box.exec()
@@ -200,6 +239,12 @@ def convert(parent, fmt, pdf_bytes, pdf_path, name, page_count):
         try:
             if clicked is here_btn and hasattr(parent, "open_files_as_tabs"):
                 parent.open_files_as_tabs([target])
+                if fmt == LATEX:   # compile at once, so the preview shows the result
+                    editor = parent.tab_for_path(target) if hasattr(parent, "tab_for_path") else None
+                    if editor is not None and hasattr(editor, "compile"):
+                        from PySide6.QtCore import QTimer
+
+                        QTimer.singleShot(200, editor.compile)
             elif clicked is open_btn and open_btn is not None:
                 os.startfile(target)
             elif clicked is folder_btn:

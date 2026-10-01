@@ -1,5 +1,17 @@
 """Convert a PDF to an editable LaTeX project (main.tex + images/).
 
+Two layouts:
+
+- Exact (the default): every page looks the way it did. The page's lines,
+  tables, plots and pictures are kept as a vector background (the page with
+  its text taken out, in background.pdf) and every line of text is typed
+  over it at its original position, in a matching font (TeX Gyre for
+  Helvetica / Times / Courier, Latin Modern and Latin Modern Math for TeX
+  documents), size and colour, spread to its original width. See
+  exact_tex.py.
+- Flowing: the text is rebuilt as headings and paragraphs (below), easier to
+  rewrite but only roughly like the original.
+
 - Typed pages (with a text layer) are rebuilt from PyMuPDF's text: headings
   by font size, paragraphs with bold / italic / monospace / colour, tables
   (page.find_tables) and the page's images.
@@ -25,6 +37,7 @@ from ..docx_export import (
 from . import texutil
 
 DEFAULT_MARGIN_PT = 54
+LAYOUT_EXACT, LAYOUT_FLOW = "exact", "flow"
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 # Span flags from PyMuPDF
 _SUPERSCRIPT, _ITALIC, _MONO, _BOLD = 1, 2, 8, 16
@@ -41,10 +54,11 @@ class PdfToLatex(PdfToDocx):
     Same options, progress and cancel() as PdfToDocx."""
 
     def __init__(self, source, pages=None, password=None, ocr=OCR_AUTO, include_annotations=True,
-                 keep_scan_images=False, progress=None):
+                 keep_scan_images=False, progress=None, layout=LAYOUT_EXACT):
         super().__init__(source, pages=pages, password=password, ocr=ocr, include_annotations=include_annotations,
                          keep_scan_images=keep_scan_images, progress=progress)
         self.tex_path = None
+        self.layout = layout
 
     # ------------------------------------------------------------ run
     def run(self, out_dir):
@@ -63,6 +77,8 @@ class PdfToLatex(PdfToDocx):
             raise ConversionError(f"Could not create the folder {project}: {e}") from e
         scanned = {i for i in indexes if is_scanned(doc[i])}
         typed = [i for i in indexes if i not in scanned]
+        if self.layout == LAYOUT_EXACT:
+            return self._run_exact(doc, indexes, scanned, project, images)
 
         self.progress(0.02, "Reading the text...")
         texts = {i: doc[i].get_text("dict", sort=True) for i in typed}
@@ -110,6 +126,60 @@ class PdfToLatex(PdfToDocx):
             r"\end{document}",
             "",
         ])
+        self.tex_path = project / "main.tex"
+        try:
+            self.tex_path.write_text(tex, encoding="utf-8")
+        except OSError as e:
+            raise ConversionError(f"Could not write {self.tex_path}. If it is open in another program, "
+                                  "close it and try again.") from e
+        self.progress(1.0, "Done")
+        return self.report
+
+    # ------------------------------------------------------------ exact layout
+    def _run_exact(self, doc, indexes, scanned, project, images):
+        from .. import exact_layout
+        from .exact_tex import ExactTex
+
+        writer = ExactTex(system_font_ok=_installed_font)
+        layouts, need_background = {}, []
+        for n, i in enumerate(indexes):
+            self._check_cancel()
+            self.progress(0.03 + 0.6 * n / len(indexes), f"Reading page {i + 1} ({n + 1} of {len(indexes)})...")
+            try:
+                layouts[i] = exact_layout.read_page(doc[i])
+            except Exception as e:  # noqa: BLE001 - that page is kept whole as its background
+                self.report.warnings.append(f"The text of page {i + 1} could not be read ({e}).")
+                layouts[i] = exact_layout.PageLayout(doc[i].rect.width, doc[i].rect.height, has_background=True,
+                                                     invisible_text=True)
+            if layouts[i].has_background or i in scanned or layouts[i].invisible_text:
+                need_background.append(i)
+        background_page = {}
+        if need_background:
+            self.progress(0.65, "Keeping the lines, tables and pictures...")
+            bg = exact_layout.text_free_copy(doc, need_background)
+            for n, i in enumerate(need_background):
+                if i in scanned or layouts[i].invisible_text:   # a scan: the whole page, as it is
+                    bg.delete_page(n)
+                    bg.insert_pdf(doc, from_page=i, to_page=i, start_at=n)
+                background_page[i] = n + 1
+            try:
+                bg.save(str(project / "background.pdf"), garbage=4, deflate=True)
+            except Exception as e:  # noqa: BLE001
+                raise ConversionError(f"Could not write {project / 'background.pdf'} ({e}).") from e
+        blocks = []
+        first = doc[indexes[0]]
+        writer.width, writer.height = first.rect.width, first.rect.height
+        for n, i in enumerate(indexes):
+            self._check_cancel()
+            self.progress(0.7 + 0.25 * n / len(indexes), f"Writing page {i + 1}...")
+            blocks.append(writer.page(doc[i], layouts[i], background_page.get(i), images))
+            if i in scanned or layouts[i].invisible_text:
+                self.report.pictures.append(i + 1)
+            else:
+                self.report.converted.append(i + 1)
+        source_name = Path(self.source).name if isinstance(self.source, (str, Path)) else "a PDF"
+        tex = writer.document(source_name, first.rect.width, first.rect.height, blocks,
+                              "background.pdf" if need_background else "")
         self.tex_path = project / "main.tex"
         try:
             self.tex_path.write_text(tex, encoding="utf-8")
@@ -186,6 +256,20 @@ class PdfToLatex(PdfToDocx):
         return (r"\begin{center}" "\n"
                 rf"\includegraphics[width={width:.2f}\linewidth]{{images/{name}.{ext}}}" "\n"
                 r"\end{center}")
+
+
+def _installed_font(name):
+    """True when Windows has the font `name` installed (XeLaTeX finds it by name)."""
+    import os
+
+    from .. import fonts
+
+    files = fonts.family_files(name) if name else None
+    if not files:
+        return False
+    roots = [os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts").lower(),
+             os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Windows", "Fonts").lower()]
+    return any(str(files["regular"]).lower().startswith(r) for r in roots)
 
 
 # --------------------------------------------------------------------------
