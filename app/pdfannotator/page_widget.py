@@ -2,10 +2,10 @@ import time
 
 import pymupdf as fitz
 from PySide6.QtWidgets import QApplication, QWidget
-from PySide6.QtGui import QColor, QCursor, QImage, QPainter, QPainterPath, QPen, QPixmap, QPointingDevice
-from PySide6.QtCore import QEvent, Qt, QPoint, QPointF, QRect
+from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QPointingDevice
+from PySide6.QtCore import QEvent, Qt, QPoint, QPointF, QRect, QTimer
 
-from . import handles, icons, pdf_ops, strokes, theme
+from . import handles, pdf_ops, strokes, theme
 from .tools import Tool
 
 # Tools that collect a freehand point path while the mouse is dragging
@@ -71,38 +71,64 @@ class PageWidget(QWidget):
         self._pan_last_pos = None
         self._flash_rect = None
 
+        self._eraser_hover = None         # where the Eraser's tip is drawn
+        self._erase_queue = []            # rubbing not erased yet (PDF points)
+        self._erase_last = None
+        self._erase_timer = QTimer(self)
+        self._erase_timer.setSingleShot(True)
+        self._erase_timer.setInterval(16)
+        self._erase_timer.timeout.connect(self._flush_erase)
+
         self.ensure_placeholder()
         self.apply_tool_cursor()
 
     def apply_tool_cursor(self):
-        if self.controller.current_tool == Tool.ERASER:
-            self.setCursor(self._eraser_cursor())
+        if self.controller.current_tool == Tool.ERASER and self._rubbing_eraser():
+            self.setCursor(Qt.BlankCursor)   # the eraser tip is drawn instead (see _paint_eraser_tip)
             return
         self.setCursor(TOOL_CURSORS.get(self.controller.current_tool, Qt.CrossCursor))
 
-    def _eraser_cursor(self):
-        """The Eraser: a ring as big as what it rubs out. The Stroke Eraser:
-        a small ring with its icon beside it."""
-        stroke = getattr(self.controller, "eraser_mode", "point") == "stroke"
+    def _rubbing_eraser(self):
+        """The Eraser (rubs out parts of strokes), not the Stroke Eraser."""
+        return getattr(self.controller, "eraser_mode", "point") != "stroke"
+
+    def _paint_eraser_tip(self, painter):
+        """The Eraser's tip under the pointer: a soft round rubber, as big as
+        what it rubs out, like the end of a pencil seen from above."""
+        if self._eraser_hover is None:
+            return
         try:
-            diameter = 2 * self.controller.eraser_radius(self) * self.controller.px_per_pt(self)
+            r = self.controller.eraser_radius(self) * self.controller.px_per_pt(self)
         except Exception:   # no page yet
-            diameter = 12
-        diameter = 8 if stroke else max(6, min(160, round(diameter)))
-        side = max(diameter + 4, 34 if stroke else 0)
-        pix = QPixmap(side, side)
-        pix.fill(Qt.transparent)
-        p = QPainter(pix)
-        p.setRenderHint(QPainter.Antialiasing)
-        c = (side - 1) / 2 if not stroke else diameter / 2 + 2
-        for color, width in ((QColor(255, 255, 255, 220), 3.0), (QColor(30, 30, 30, 230), 1.2)):
-            p.setPen(QPen(color, width))
-            p.setBrush(Qt.NoBrush)
-            p.drawEllipse(QPointF(c, c if not stroke else side - c), diameter / 2, diameter / 2)
-        if stroke:
-            p.drawPixmap(side - 22, 0, icons.pixmap("eraser-stroke", 22, "#1e1e1e"))
-        p.end()
-        return QCursor(pix, round(c), round(c if not stroke else side - c))
+            r = 6.0
+        r = max(3.0, r)
+        c = QPointF(self._eraser_hover)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        for spread, alpha in ((3.0, 18), (1.6, 30)):   # a soft shadow round the rubber
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 0, 0, alpha))
+            painter.drawEllipse(c + QPointF(0, 1), r + spread, r + spread)
+        painter.setBrush(QColor(255, 255, 255, 215))
+        painter.setPen(QPen(QColor(120, 124, 134, 230), 1.0))
+        painter.drawEllipse(c, r, r)
+        painter.restore()
+
+    def _queue_erase(self, pdf_point):
+        """Rubbing is erased in small batches (about 60 a second), so the page
+        keeps up with the pointer and the cut follows the whole path."""
+        self._erase_queue.append(pdf_point)
+        if not self._erase_timer.isActive():
+            self._erase_timer.start()
+
+    def _flush_erase(self):
+        self._erase_timer.stop()
+        if not self._erase_queue:
+            return
+        path = ([self._erase_last] if self._erase_last is not None else []) + self._erase_queue
+        self._erase_last = self._erase_queue[-1]
+        self._erase_queue = []
+        self.controller.erase_step(self, path)
 
     def page(self) -> fitz.Page:
         return self.controller.document.page(self.page_index)
@@ -129,8 +155,6 @@ class PageWidget(QWidget):
         self.pixmap = QPixmap.fromImage(img)
         self.setFixedSize(self.pixmap.size())
         self.rendered = True
-        if self.controller.current_tool == Tool.ERASER:
-            self.apply_tool_cursor()   # the ring follows the zoom
         self.update()
 
     def invalidate(self):
@@ -177,7 +201,12 @@ class PageWidget(QWidget):
             tool = self.controller.current_tool
             if tool in DRAW_TOOLS and len(self._path_points) > 1:
                 self._paint_stroke_preview(painter, tool)
-            elif tool in PATH_TOOLS and tool != Tool.ERASER and len(self._path_points) > 1:
+            elif tool == Tool.ERASER and self._rubbing_eraser():
+                pass   # it erases as it goes; the tip shows where
+            elif tool in PATH_TOOLS and len(self._path_points) > 1:
+                if tool == Tool.ERASER:   # the Stroke Eraser: the line it will erase along
+                    painter.setRenderHint(QPainter.Antialiasing)
+                    painter.setPen(QPen(self.controller.current_color, 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
                 for i in range(1, len(self._path_points)):
                     painter.drawLine(self._path_points[i - 1], self._path_points[i])
             elif self._drag_start and self._drag_current:
@@ -191,6 +220,8 @@ class PageWidget(QWidget):
                     painter.drawEllipse(r)
                 else:
                     painter.drawRect(r)
+        if self.controller.current_tool == Tool.ERASER and self._rubbing_eraser() and self.rendered:
+            self._paint_eraser_tip(painter)
         painter.end()
 
     def _paint_stroke_preview(self, painter, tool):
@@ -391,8 +422,9 @@ class PageWidget(QWidget):
             self._speed_pressure = None
             if tool == Tool.INK and self.controller.ink_pressure:
                 self._path_pressure = [self._pressure_now(pos_f, event)]
-            if tool == Tool.ERASER:
-                self.controller.erase_step(self, [self.to_pdf_point(pos_f)])
+            if tool == Tool.ERASER and self._rubbing_eraser():
+                self._erase_queue, self._erase_last = [], None
+                self._queue_erase(self.to_pdf_point(pos_f))
         self.update()
 
     def mouseMoveEvent(self, event):
@@ -427,6 +459,10 @@ class PageWidget(QWidget):
                 self._pan_last_pos = pos
             return
 
+        if tool == Tool.ERASER and self._rubbing_eraser():
+            self._eraser_hover = QPointF(event.position()) if hasattr(event, "position") else QPointF(pos)
+            self.update()
+
         if not self._dragging:
             return
         self._drag_current = pos
@@ -438,8 +474,8 @@ class PageWidget(QWidget):
             self._path_points.append(pos_f)
             if self._path_pressure:
                 self._path_pressure.append(self._pressure_now(pos_f, event))
-            if tool == Tool.ERASER:   # it erases as it goes
-                self.controller.erase_step(self, [self.to_pdf_point(p) for p in self._path_points[-2:]])
+            if tool == Tool.ERASER and self._rubbing_eraser():   # it erases as it goes
+                self._queue_erase(self.to_pdf_point(pos_f))
         if tool == Tool.MEASURE:
             p1 = self.to_pdf_point(self._drag_start)
             p2 = self.to_pdf_point(pos)
@@ -447,6 +483,9 @@ class PageWidget(QWidget):
         self.update()
 
     def leaveEvent(self, event):
+        if self._eraser_hover is not None:
+            self._eraser_hover = None
+            self.update()
         if self.controller.current_tool == Tool.LASER_POINTER:
             self.controller.hide_laser_pointer()
         super().leaveEvent(event)
@@ -517,6 +556,10 @@ class PageWidget(QWidget):
                     path_points.append(end)  # the stabilizer lags: finish where the pen lifted
                     if pressures:
                         pressures.append(pressures[-1])
+            if tool == Tool.ERASER and self._rubbing_eraser():
+                self._flush_erase()   # the last bit of rubbing, then one undo step for it all
+                self.controller.commit_eraser(self, [self.to_pdf_point(p) for p in path_points])
+                return
             if len(path_points) < 2:
                 return
             pts = [self.to_pdf_point(p) for p in path_points]

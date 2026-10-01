@@ -101,13 +101,13 @@ Single-letter shortcuts are shown in brackets.
   Escape to cancel.
 - **Dimension** (D): drag to measure and permanently label a distance.
 - **Eraser** (E): two erasers, picked from the arrow on its button (or the
-  Tools menu; Shift+E switches between them). The **Eraser** rubs out only
-  the parts of pen and marker strokes you pass over (a stroke it crosses is
-  split in two) and removes shapes, notes and text boxes it touches; its
-  size is Small, Medium, Large or Extra Large (or any size in the toolbar),
-  and the cursor is a ring that size. The **Stroke Eraser** removes each
-  annotation it touches whole (strokes only where their line is, not
-  anywhere in their box). Both erase as you drag; one drag is one undo.
+  Tools menu; Shift+E switches between them). The **Eraser** works like a
+  pencil eraser: its round tip (Small, Medium, Large or Extra Large, or any
+  size in the toolbar) rubs out only the parts of pen and marker strokes it
+  passes over, as you drag, cutting them cleanly at its edge; shapes, notes
+  and text boxes it touches are removed. The **Stroke Eraser** draws a line
+  as you drag; when you let go, every annotation the line crossed is
+  removed. One drag is one undo.
 - **Lasso Select** (S): draw a loop to select everything inside it.
 - **Snapshot** (H): drag a region to copy it to the clipboard as an image.
 - **Crop** (C): drag a region to crop the page to it.

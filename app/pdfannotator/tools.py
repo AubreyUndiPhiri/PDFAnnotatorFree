@@ -92,10 +92,12 @@ TOOL_STYLE_OVERRIDES = {
 # The two erasers (Tool.ERASER works as one or the other)
 ERASER_MODES = {
     "point": ("Eraser", "eraser",
-              "Drag to rub out the parts of pen and marker strokes you pass over. Shapes, notes and "
+              "Rub over pen and marker strokes to erase just the parts you pass over, like a pencil "
+              "eraser. Shapes, notes and "
               "text boxes it touches are removed. Shift+E switches to the Stroke Eraser."),
     "stroke": ("Stroke Eraser", "eraser-stroke",
-               "Drag over annotations to remove each one you touch, whole. Shift+E switches to the Eraser."),
+               "Drag a line over annotations: when you let go, each one it crossed is removed. "
+               "Shift+E switches to the Eraser."),
 }
 ERASER_SIZES = (("Small", 4.0), ("Medium", 10.0), ("Large", 20.0), ("Extra Large", 40.0))
 

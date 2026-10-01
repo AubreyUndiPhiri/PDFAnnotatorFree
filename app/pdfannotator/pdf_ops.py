@@ -1130,23 +1130,81 @@ def _stroke_hit(annot, segments, radius):
 
 
 def erase_along_path(page: fitz.Page, points, radius=2.0) -> int:
-    """The Stroke Eraser: delete every annotation the path touches (pen and
-    marker strokes only where their line is, not anywhere in their box).
-    Returns the number of annotations removed."""
-    segments = _path_segments(points)
-    if not segments:
-        return 0
-    to_delete = {annot.xref: annot for annot in page.annots() if _stroke_hit(annot, segments, radius)}
+    """The Stroke Eraser: delete every annotation whose box the path (the
+    line drawn while dragging) passes through. Returns how many went."""
+    to_delete = {}
+    pts = [fitz.Point(_xy(p)) for p in points]
+    for annot in page.annots():
+        rect = fitz.Rect(annot.rect)
+        if any(rect.contains(p) for p in pts):
+            to_delete[annot.xref] = annot
     for annot in to_delete.values():
         page.delete_annot(annot)
     return len(to_delete)
 
 
+def _edge(inside, outside, w_in, w_out, segments, reach):
+    """The point between `inside` (under the eraser) and `outside` where the
+    eraser's edge is (and the stroke width there), found by halving."""
+    lo, hi = 0.0, 1.0      # t = 0: inside, t = 1: outside
+    for _ in range(14):
+        mid = (lo + hi) / 2
+        p = (inside[0] + (outside[0] - inside[0]) * mid, inside[1] + (outside[1] - inside[1]) * mid)
+        if _near_path(p, segments, reach):
+            lo = mid
+        else:
+            hi = mid
+    p = (inside[0] + (outside[0] - inside[0]) * hi, inside[1] + (outside[1] - inside[1]) * hi)
+    w = None if w_in is None else w_in + (w_out - w_in) * hi
+    return p, w
+
+
+def _polyline_length(pts):
+    return sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:]))
+
+
+def _rub_stroke(pts, ws, segments, reach, radius):
+    """What is left of one stroke after the eraser passes: (pieces, hit).
+    Each piece ends exactly at the eraser's edge, like rubber on pencil."""
+    if len(pts) == 1:
+        if _near_path(pts[0], segments, reach):
+            return [], True
+        return [(pts, ws or [])], False
+    pts, ws = _resample(pts, ws, max(0.3, radius / 4))
+    inside = [_near_path(p, segments, reach) for p in pts]
+    if not any(inside):
+        return None, False
+    pieces, run_p, run_w = [], [], []
+    for i, p in enumerate(pts):
+        w = ws[i] if ws else None
+        if inside[i]:
+            if i and not inside[i - 1]:   # leaving the paper: end the piece at the eraser's edge
+                e, ew = _edge(p, pts[i - 1], w, ws[i - 1] if ws else None, segments, reach)
+                run_p.append(e)
+                if ws:
+                    run_w.append(ew)
+                pieces.append((run_p, run_w))
+                run_p, run_w = [], []
+            continue
+        if i and inside[i - 1]:           # back on the paper: start at the eraser's edge
+            e, ew = _edge(pts[i - 1], p, ws[i - 1] if ws else None, w, segments, reach)
+            run_p, run_w = [e], ([ew] if ws else [])
+        run_p.append(p)
+        if ws:
+            run_w.append(w)
+    if run_p:
+        pieces.append((run_p, run_w))
+    # crumbs smaller than the line is wide would only look like specks
+    min_len = max(0.4, reach - radius)   # half the line's width
+    return [(pp, pw) for pp, pw in pieces if len(pp) > 1 and _polyline_length(pp) >= min_len], True
+
+
 def erase_ink_along_path(page: fitz.Page, points, radius) -> int:
     """The Eraser: rub out the parts of ink strokes within `radius` of the
-    path. Strokes it cuts through are replaced by the pieces left over;
-    anything else it touches (a box, a note, a highlight) can't be cut, so it
-    goes whole. Returns how many annotations were changed or removed."""
+    path, the way an eraser rubs out pencil: strokes it crosses are cut
+    cleanly at its edge and replaced by what is left over. Anything else it
+    touches (a box, a note, a highlight) can't be cut, so it goes whole.
+    Returns how many annotations were changed or removed."""
     segments = _path_segments(points)
     if not segments:
         return 0
@@ -1163,25 +1221,14 @@ def erase_ink_along_path(page: fitz.Page, points, radius) -> int:
             continue
         reach = radius + width / 2
         widths = pressure_widths(annot)
-        strokes, offset, pieces, hit = annot.vertices or [], 0, [], False
-        for stroke in strokes:
+        offset, pieces, hit = 0, [], False
+        for stroke in annot.vertices or []:
             pts = [tuple(p) for p in stroke]
             ws = widths[offset:offset + len(pts)] if widths and len(widths) >= offset + len(pts) else None
             offset += len(pts)
-            pts, ws = _resample(pts, ws, max(0.5, radius / 3)) if len(pts) > 1 else (pts, ws)
-            run_p, run_w = [], []
-            for i, p in enumerate(pts):
-                if _near_path(p, segments, reach):
-                    hit = True
-                    if len(run_p) > 1:
-                        pieces.append((run_p, run_w))
-                    run_p, run_w = [], []
-                else:
-                    run_p.append(p)
-                    if ws:
-                        run_w.append(ws[i])
-            if len(run_p) > 1 or (len(pts) == 1 and run_p):
-                pieces.append((run_p, run_w))
+            left, cut = _rub_stroke(pts, ws, segments, reach, radius)
+            hit = hit or cut
+            pieces.extend([(pts, ws or [])] if left is None else left)
         if not hit:
             continue
         changed += 1
