@@ -179,6 +179,9 @@ class DocumentTab(QWidget):
         outer.addWidget(self.thumbnails)
         outer.addWidget(self.scroll_area, 1)
 
+        from .geometry_tools import GeometryManager
+
+        self.geometry = GeometryManager(self)   # the ruler, set squares, protractor and compass
         self.new_document()
 
     # ---------------------------------------------------------------
@@ -414,6 +417,8 @@ class DocumentTab(QWidget):
         self.selected = []
         for pw in self.page_widgets:
             pw.invalidate()
+        if hasattr(self, "geometry"):
+            self.geometry.refresh()   # the tools stay true to the page's scale
         self.window.on_zoom_changed(zoom)
         QTimer.singleShot(0, self.update_visible_pages)
         if anchor_pdf_point is not None:
@@ -656,12 +661,13 @@ class DocumentTab(QWidget):
     # Interaction callbacks invoked by PageWidget
     # ---------------------------------------------------------------
 
-    def commit_ink(self, widget, points, pressures=None):
+    def commit_ink(self, widget, points, pressures=None, smooth=True):
         """A pen stroke: smoothed when Smooth handwriting is on, thicker and
-        thinner along its length when `pressures` (0-1 per point) are given."""
+        thinner along its length when `pressures` (0-1 per point) are given.
+        smooth=False: drawn along a ruler or compass, kept exactly."""
         page = widget.page()
         pts, pres = strokes.smooth_stroke([(p.x, p.y) for p in points], pressures,
-                                          1.0 if self.ink_smoothing else 0.0)
+                                          1.0 if self.ink_smoothing and smooth else 0.0)
         if len(pts) < 2:
             return
         widths = [strokes.width_for(self.current_width, p) for p in pres] if pressures else None
@@ -670,9 +676,21 @@ class DocumentTab(QWidget):
         widget.render()
         self.refresh_thumbnail(widget.page_index)
 
-    def commit_marker(self, widget, points):
+    def commit_geometry_ink(self, widget, points):
+        """A line drawn by the compass: in the pen's colour and width, exactly
+        where the pencil went (no smoothing)."""
+        style = self.window.tool_styles[Tool.INK]
+        if len(points) < 2:
+            return
+        pdf_ops.add_ink(widget.page(), points, QColor(*style["color"]), style["width"])
+        self.document.snapshot()
+        widget.render()
+        self.refresh_thumbnail(widget.page_index)
+
+    def commit_marker(self, widget, points, smooth=True):
         page = widget.page()
-        pts, _ = strokes.smooth_stroke([(p.x, p.y) for p in points], None, 1.0 if self.ink_smoothing else 0.0)
+        pts, _ = strokes.smooth_stroke([(p.x, p.y) for p in points], None,
+                                       1.0 if self.ink_smoothing and smooth else 0.0)
         if len(pts) < 2:
             return
         pdf_ops.add_marker(page, [fitz.Point(*p) for p in pts], self.current_color, self.current_width,

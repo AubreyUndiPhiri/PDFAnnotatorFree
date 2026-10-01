@@ -112,6 +112,31 @@ Single-letter shortcuts are shown in brackets.
 - **Snapshot** (H): drag a region to copy it to the clipboard as an image.
 - **Crop** (C): drag a region to crop the page to it.
 - **Measure** (B): live distance readout while dragging; nothing is added.
+- **Geometry tools** (the arrow on the Measure button, or Tools > Geometry
+  Tools): a **Ruler** (30 cm / 12 in), **Set Squares** (45° and 30°/60°), a
+  **Protractor** and a **Compass**, frosted like acrylic and drawn to the
+  page's own scale: a centimetre on the ruler is a centimetre on the page at
+  every zoom (View > **Zoom to Real Size** makes it a real centimetre on
+  your screen too). They lie on the paper: drag to move, turn by the round
+  knob or the mouse wheel (Shift: 15° steps; they click into 0°, 45°, 90°),
+  double-click to straighten, right-click for more; centimetres or inches.
+  Start a Pen or Marker stroke along a straight edge (or the protractor's
+  curve) and the line follows it exactly, with its length shown as you
+  draw. The protractor's two arms measure an angle. The compass: drag the
+  needle to place it, the pencil to set the radius (or turn the wheel), the
+  knob on top to draw an arc in the pen's colour; double-click the knob for
+  a full circle.
+- **Calculator** (Ctrl+Alt+K, the calculator button): a scientific
+  calculator at the side: trigonometry in degrees or radians and the
+  inverses (2nd), hyperbolic functions, logs, powers and roots, factorials,
+  nCr / nPr, mod, %, π and e, EXP, Ans, memory (MC MR M+ M−), a live result
+  as you type, a history to click back, and the keyboard.
+- **Clock and Timer** (Ctrl+Alt+T, the clock button): an analogue clock with
+  the date and world clocks; a timer on a ring with presets, +1 min and its
+  end time; a stopwatch with laps (fastest and slowest marked); alarms that
+  repeat once, every day, on weekdays or at weekends, with snooze. Timers
+  and alarms keep running with the panel closed (the status bar shows a
+  running timer); when one is up a card says so and a soft chime plays.
 - **Laser Pointer** (O) / **Pointer** (V): presentation aids that never
   change the PDF.
 - **Insert Image / Draw Signature**: place a logo or a hand-drawn signature.

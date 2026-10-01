@@ -125,6 +125,10 @@ class MainWindow(QMainWindow):
         self.statusBar().setSizeGripEnabled(False)
         self.hint_label = QLabel("")
         self.statusBar().addWidget(self.hint_label, 1)
+        self.status_clock_label = QLabel("")   # a running timer / stopwatch
+        self.status_clock_label.setObjectName("syncStatus")
+        self.status_clock_label.setToolTip("Clock and Timer (Ctrl+Alt+T)")
+        self.statusBar().addPermanentWidget(self.status_clock_label)
         self.status_sync_label = QLabel("")
         self.status_sync_label.setObjectName("syncStatus")
         self.statusBar().addPermanentWidget(self.status_sync_label)
@@ -430,6 +434,7 @@ class MainWindow(QMainWindow):
                                       "how hard you press, with a mouse from how fast you draw")
         self.act_pressure_ink.setChecked(self.ink_pressure)
         self._create_eraser_actions(settings)
+        self._create_geometry_actions()
         self._create_text_format_actions()
         self.ribbon_shown = settings.value("ui/ribbon", "true") == "true"
         self.act_ribbon = a("Show Ribbon", self._set_ribbon_shown, None, "Ctrl+F1", checkable=True,
@@ -439,6 +444,132 @@ class MainWindow(QMainWindow):
         self.act_dark = a("Dark Mode", self.toggle_dark_mode, "moon", "Ctrl+Shift+D", checkable=True,
                           tip="Switch between the light (glass) and dark (clay) look")
         self.act_dark.setChecked(theme.mode == theme.DARK)
+
+    # ---- geometry tools (under the Measure button), the calculator and the clock
+    GEOMETRY_TOOLS = (("ruler", "Ruler", "ruler"), ("square45", "Set Square 45°", "set-square"),
+                      ("square30", "Set Square 30°/60°", "set-square"), ("protractor", "Protractor", "protractor"),
+                      ("compass", "Compass", "compass"))
+
+    def _create_geometry_actions(self):
+        self.geometry_menu = QMenu("Geometry Tools", self)
+        self.geometry_menu.setIcon(icons.icon("ruler"))
+        self.geometry_menu.aboutToShow.connect(self._sync_geometry_menu)
+        self.geometry_actions = {}
+        for kind, label, icon in self.GEOMETRY_TOOLS:
+            act = self.geometry_menu.addAction(icons.icon(icon), label, lambda k=kind: self.add_geometry_tool(k))
+            act.setStatusTip(f"Put a {label.lower()} on the page: drag to move it, turn it by its knob or the wheel")
+            self.geometry_actions[kind] = act
+        self.geometry_menu.addSeparator()
+        self.geometry_unit_actions = {}
+        unit_group = QActionGroup(self)
+        for unit, label in (("cm", "Centimetres"), ("in", "Inches")):
+            act = self.geometry_menu.addAction(label, lambda u=unit: self._set_geometry_unit(u))
+            act.setCheckable(True)
+            unit_group.addAction(act)
+            self.geometry_unit_actions[unit] = act
+        self.geometry_menu.addSeparator()
+        self.act_real_size = self._action("Zoom to Real Size", self.zoom_to_real_size, "real-size",
+                                          tip="Zoom so a centimetre on the page is a centimetre on your screen")
+        self.geometry_menu.addAction(self.act_real_size)
+        self.geometry_clear = self.geometry_menu.addAction(icons.icon("clear-all"), "Remove All Geometry Tools",
+                                                           lambda: self.current_tab() and self.current_tab().geometry.clear())
+        self.act_calculator = self._action("Calculator", self.toggle_calculator, "calculator", "Ctrl+Alt+K",
+                                           checkable=True, tip="A scientific calculator at the side")
+        self.act_clock = self._action("Clock and Timer", self.toggle_clock, "clock", "Ctrl+Alt+T", checkable=True,
+                                      tip="Clock, timer, stopwatch and alarms at the side")
+        self._docks = {}
+
+    def _sync_geometry_menu(self):
+        tab = self.current_tab()
+        for act in self.geometry_actions.values():
+            act.setEnabled(tab is not None)
+        self.geometry_clear.setEnabled(tab is not None and bool(tab.geometry.tools))
+        unit = tab.geometry.unit if tab is not None else theme._settings().value("geometry/unit", "cm")
+        if unit in self.geometry_unit_actions:
+            self.geometry_unit_actions[unit].setChecked(True)
+
+    def add_geometry_tool(self, kind):
+        tab = self.current_tab()
+        if tab is None:
+            return None
+        tool = tab.geometry.add(kind)
+        hints = {"compass": "Compass: drag the needle to place it, the pencil to set the radius, the knob on top "
+                            "to draw (double-click the knob for a full circle). The wheel changes the radius.",
+                 "protractor": "Protractor: drag the round ends of its arms to measure an angle. Turn it by its "
+                               "knob or the wheel; draw along its curve or base with the Pen."}
+        tab.set_hint(hints.get(kind, f"{tool.title}: drag to move, turn by the knob or the wheel (Shift: 15°), "
+                                     "double-click to straighten. Draw along an edge with the Pen or Marker."))
+        return tool
+
+    def _set_geometry_unit(self, unit):
+        for i in range(self.tabs.count()):
+            tab = self.tabs.widget(i)
+            if isinstance(tab, DocumentTab):
+                tab.geometry.set_unit(unit)
+        theme._settings().setValue("geometry/unit", unit)
+
+    def zoom_to_real_size(self):
+        """A centimetre on the page is a centimetre on the screen."""
+        tab = self.current_tab()
+        if tab is None:
+            return
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        dpi = screen.physicalDotsPerInch() if screen else 96.0
+        if not 40 <= dpi <= 600:
+            dpi = screen.logicalDotsPerInch() if screen else 96.0
+        tab.set_zoom(dpi / 72.0)
+        self.statusBar().showMessage(f"Real size: {dpi:.0f} pixels per inch on this screen", 4000)
+
+    def _dock(self, key):
+        """The side panel for the calculator or the clock (made the first time)."""
+        from PySide6.QtWidgets import QDockWidget
+
+        if key in self._docks:
+            return self._docks[key]
+        if key == "calculator":
+            from .calculator import CalculatorPanel
+
+            panel, title, act = CalculatorPanel(self), "Calculator", self.act_calculator
+            panel.result_copied.connect(lambda t: self.statusBar().showMessage(f"Copied {t}", 2500))
+        else:
+            panel, title, act = self.clock_panel(), "Clock", self.act_clock
+        dock = QDockWidget(title, self)
+        dock.setObjectName("sidePanel")
+        dock.setWidget(panel)
+        dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable |
+                         QDockWidget.DockWidgetFloatable)
+        dock.setMinimumWidth(300)
+        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        others = [d for k, d in self._docks.items() if d.isVisible() and not d.isFloating()]
+        if others:
+            self.tabifyDockWidget(others[0], dock)
+        dock.visibilityChanged.connect(lambda shown, a=act, d=dock: a.setChecked(d.isVisible()))
+        self._docks[key] = dock
+        return dock
+
+    def clock_panel(self):
+        """The clock lives as long as the window, so timers and alarms keep going."""
+        if getattr(self, "_clock_panel", None) is None:
+            from .clock_panel import ClockPanel
+
+            self._clock_panel = ClockPanel(self)
+            self._clock_panel.status_changed.connect(self.status_clock_label.setText)
+        return self._clock_panel
+
+    def _toggle_dock(self, key, shown):
+        dock = self._dock(key)
+        dock.setVisible(bool(shown))
+        if shown:
+            dock.raise_()
+
+    def toggle_calculator(self, checked):
+        self._toggle_dock("calculator", checked)
+        if checked:
+            self._docks["calculator"].widget().entry.setFocus()
+
+    def toggle_clock(self, checked):
+        self._toggle_dock("clock", checked)
 
     # ---- the two erasers: one tool, two ways of working
     def _create_eraser_actions(self, settings):
@@ -687,6 +818,9 @@ class MainWindow(QMainWindow):
         bar.addSeparator()
         bar.addAction(self.act_find)
         bar.addAction(self.act_dark)
+        bar.addSeparator()
+        bar.addAction(self.act_calculator)
+        bar.addAction(self.act_clock)
 
         bar.addWidget(self._spacer())
 
@@ -745,6 +879,12 @@ class MainWindow(QMainWindow):
                     lambda pos, t=tool, b=btn: self._show_tool_context_menu(t, b, pos)
                 )
 
+        measure_btn = self.tool_toolbar.widgetForAction(self.tool_actions[Tool.MEASURE])
+        if measure_btn is not None:   # the arrow: the ruler, set squares, protractor and compass
+            self.geometry_menu.insertAction(self.geometry_menu.actions()[0], self.tool_actions[Tool.MEASURE])
+            self.geometry_menu.insertSeparator(self.geometry_menu.actions()[1])
+            measure_btn.setMenu(self.geometry_menu)
+            measure_btn.setPopupMode(QToolButton.MenuButtonPopup)
         eraser_btn = self.tool_toolbar.widgetForAction(self.tool_actions[Tool.ERASER])
         if eraser_btn is not None:
             eraser_btn.setMenu(self.eraser_menu)
@@ -1027,6 +1167,9 @@ class MainWindow(QMainWindow):
                 m.addAction(self.tool_actions[tool])
 
         m.addSeparator()
+        m.addMenu(self.geometry_menu)
+        m.addActions([self.act_calculator, self.act_clock])
+        m.addSeparator()
         m.addActions([self.act_smooth_ink, self.act_pressure_ink])
         m.addSeparator()
         hw_menu = m.addMenu(icons.icon("signature"), "Handwriting Font")
@@ -1067,7 +1210,7 @@ class MainWindow(QMainWindow):
         m = menubar.addMenu("&View")
         m.addActions([self.act_zoom_in, self.act_zoom_out])
         m.addSeparator()
-        m.addActions([self.act_actual, self.act_fit_page, self.act_fit_width])
+        m.addActions([self.act_actual, self.act_fit_page, self.act_fit_width, self.act_real_size])
         m.addSeparator()
         m.addAction(self.act_fullscreen)
         m.addAction(self.act_dark)
@@ -1732,6 +1875,8 @@ class MainWindow(QMainWindow):
             if not self._confirm_close_tab(tab):
                 event.ignore()
                 return
+        if getattr(self, "_clock_panel", None) is not None:
+            self._clock_panel.shutdown()   # no chime left ringing
         event.accept()
 
     # ---------------------------------------------------------------

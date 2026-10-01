@@ -71,6 +71,7 @@ class PageWidget(QWidget):
         self._pan_last_pos = None
         self._flash_rect = None
 
+        self._snap_edge = None            # a ruler / protractor edge the pen is following
         self._eraser_hover = None         # where the Eraser's tip is drawn
         self._erase_queue = []            # rubbing not erased yet (PDF points)
         self._erase_last = None
@@ -87,6 +88,15 @@ class PageWidget(QWidget):
             self.setCursor(Qt.BlankCursor)   # the eraser tip is drawn instead (see _paint_eraser_tip)
             return
         self.setCursor(TOOL_CURSORS.get(self.controller.current_tool, Qt.CrossCursor))
+
+    def _to_viewport(self, point):
+        return self.mapTo(self.controller.scroll_area.viewport(), QPointF(point))
+
+    def _snapped(self, point):
+        """`point` moved onto the tool edge the stroke is following."""
+        viewport = self.controller.scroll_area.viewport()
+        on_edge = self.controller.geometry.project(self._snap_edge, self._to_viewport(point))
+        return self.mapFrom(viewport, on_edge)
 
     def _rubbing_eraser(self):
         """The Eraser (rubs out parts of strokes), not the Stroke Eraser."""
@@ -422,6 +432,13 @@ class PageWidget(QWidget):
             self._speed_pressure = None
             if tool == Tool.INK and self.controller.ink_pressure:
                 self._path_pressure = [self._pressure_now(pos_f, event)]
+            self._snap_edge = None
+            geometry = getattr(self.controller, "geometry", None)
+            if tool in DRAW_TOOLS and geometry is not None and geometry.tools:
+                self._snap_edge = geometry.edge_near(self._to_viewport(pos_f))
+                if self._snap_edge is not None:   # the line follows the ruler (or the curve)
+                    self._snap_start = self._snapped(pos_f)
+                    self._path_points = [self._snap_start]
             if tool == Tool.ERASER and self._rubbing_eraser():
                 self._erase_queue, self._erase_last = [], None
                 self._queue_erase(self.to_pdf_point(pos_f))
@@ -468,7 +485,12 @@ class PageWidget(QWidget):
         self._drag_current = pos
         if tool in PATH_TOOLS:
             pos_f = QPointF(event.position()) if hasattr(event, "position") else QPointF(pos)
-            if tool in DRAW_TOOLS and self.controller.ink_smoothing and self._path_points:
+            if self._snap_edge is not None and tool in DRAW_TOOLS:
+                pos_f = self._snapped(pos_f)
+                geometry = self.controller.geometry
+                geometry.show_readout(geometry.measure_text(self._snap_edge, self._to_viewport(self._snap_start),
+                                                            self._to_viewport(pos_f)), self._to_viewport(pos_f))
+            elif tool in DRAW_TOOLS and self.controller.ink_smoothing and self._path_points:
                 last = self._path_points[-1]
                 pos_f = last + (pos_f - last) * STABILIZER
             self._path_points.append(pos_f)
@@ -549,8 +571,11 @@ class PageWidget(QWidget):
         self._path_pressure = []
         self.update()
 
+        snapped, self._snap_edge = self._snap_edge is not None and tool in DRAW_TOOLS, None
+        if snapped:
+            self.controller.geometry.hide_readout()
         if tool in PATH_TOOLS:
-            if tool in DRAW_TOOLS and path_points and self.controller.ink_smoothing:
+            if tool in DRAW_TOOLS and path_points and self.controller.ink_smoothing and not snapped:
                 end = QPointF(event.position()) if hasattr(event, "position") else QPointF(pos)
                 if (end - path_points[-1]).manhattanLength() > 0.5:
                     path_points.append(end)  # the stabilizer lags: finish where the pen lifted
@@ -566,9 +591,9 @@ class PageWidget(QWidget):
             if tool == Tool.INK:
                 if pressures and not self._pressure_from_pen:
                     pressures = strokes.taper(pressures)  # simulated: ease in and out like a real pen
-                self.controller.commit_ink(self, pts, pressures or None)
+                self.controller.commit_ink(self, pts, pressures or None, smooth=not snapped)
             elif tool == Tool.MARKER:
-                self.controller.commit_marker(self, pts)
+                self.controller.commit_marker(self, pts, smooth=not snapped)
             elif tool == Tool.ERASER:
                 self.controller.commit_eraser(self, pts)
             elif tool == Tool.LASSO:

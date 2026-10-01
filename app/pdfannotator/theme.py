@@ -362,6 +362,64 @@ QLabel#formulaStatus[error="true"] {{ color: {DANGER}; }}
 /* ---- on-page text box while typing */
 QTextEdit#inlineText {{ background: transparent; border: 1px dashed {ACCENT}; border-radius: 0; padding: 0;
     selection-background-color: {ACCENT_SOFT_BORDER}; selection-color: {TEXT}; }}
+
+/* ---- side panels: the calculator and the clock */
+QDockWidget#sidePanel {{ color: {TEXT}; font-weight: 600; }}
+QDockWidget#sidePanel::title {{ background: transparent; padding: 8px 12px 2px 14px; text-align: left; }}
+QDockWidget#sidePanel > QWidget {{ background: {s['panel']}; {panel_edges} border-radius: {br}px; margin: 4px 8px 8px 4px; }}
+QWidget#calcPanel, QWidget#clockPanel {{ background: transparent; }}
+QFrame#calcDisplay {{ background: {s['field']}; {field_edges} border-radius: {r + 4}px; }}
+QLabel#calcStatus {{ color: {TEXT_MUTED}; font-size: 7.5pt; font-weight: 600; letter-spacing: 1px; }}
+QLineEdit#calcEntry {{ background: transparent; border: none; color: {TEXT_MUTED}; font-size: 12pt; padding: 0; }}
+QLabel#calcResult {{ color: {TEXT}; font-size: 24pt; font-weight: 300; }}
+QLabel#calcResult[error="true"] {{ color: {DANGER}; font-size: 14pt; font-weight: 500; }}
+QPushButton#calcKey {{ background: {s['raised']}; {raised_edges} border-radius: {r}px; color: {TEXT};
+    font-size: 10.5pt; padding: 2px; }}
+QPushButton#calcKey:hover {{ background: {s['raised_hover']}; }}
+QPushButton#calcKey:pressed {{ background: {s['pressed']}; {pressed_edges} }}
+QPushButton#calcKey[role="digit"] {{ font-size: 12.5pt; font-weight: 600; }}
+QPushButton#calcKey[role="fn"], QPushButton#calcKey[role="mem"] {{ color: {TEXT_MUTED}; font-size: 9.5pt; }}
+QPushButton#calcKey[role="mode"] {{ color: {ACCENT}; font-size: 9pt; font-weight: 600; }}
+QPushButton#calcKey[role="mode"][active="true"] {{ background: {s['checked']}; {checked_edges} }}
+QPushButton#calcKey[role="op"] {{ background: {ACCENT_SOFT}; border: 1px solid {ACCENT_SOFT_BORDER}; color: {ACCENT};
+    font-size: 13pt; font-weight: 600; }}
+QPushButton#calcKey[role="clear"] {{ color: {DANGER}; font-weight: 600; }}
+QPushButton#calcKey[role="equals"] {{ background: {s['primary']}; border: 1px solid {s['primary_top']};
+    border-bottom-color: {s['primary_bottom']}; color: {s['primary_text']}; font-size: 14pt; font-weight: 600; }}
+QPushButton#calcKey[role="equals"]:hover {{ background: {s['primary_hover']}; }}
+QPushButton#calcLink {{ background: transparent; border: none; color: {ACCENT}; font-weight: 600; padding: 2px 6px; }}
+QPushButton#calcLink:hover {{ text-decoration: underline; }}
+QListWidget#calcHistory, QListWidget#clockList {{ background: transparent; border: none; padding: 0; }}
+QListWidget#calcHistory::item {{ color: {TEXT_MUTED}; padding: 4px 6px; }}
+QListWidget#calcHistory::item:hover, QListWidget#clockList::item:hover {{ background: {s['item_hover']}; }}
+QListWidget#clockList::item {{ border-bottom: 1px solid {BORDER}; border-radius: 0; padding: 2px; color: {TEXT}; }}
+QFrame#segmentBar {{ background: {s['field']}; {field_edges} border-radius: {r + 2}px; }}
+QPushButton#segment {{ background: transparent; border: 1px solid transparent; border-radius: {r}px; color: {TEXT_MUTED};
+    padding: 6px 4px; font-weight: 600; }}
+QPushButton#segment:hover {{ color: {TEXT}; }}
+QPushButton#segment:checked {{ background: {s['raised']}; {raised_edges} color: {TEXT}; }}
+QLabel#clockBig {{ color: {TEXT}; font-size: 22pt; font-weight: 300; }}
+QLabel#clockHuge {{ color: {TEXT}; font-size: 34pt; font-weight: 200; }}
+QLabel#clockMuted {{ color: {TEXT_MUTED}; font-size: 8.5pt; }}
+QLabel#clockSection {{ color: {TEXT_MUTED}; font-size: 8pt; font-weight: 700; letter-spacing: 1px; }}
+QLabel#clockCity {{ color: {TEXT}; font-weight: 600; }}
+QLabel#clockCityTime {{ color: {TEXT}; font-size: 16pt; font-weight: 300; }}
+QFrame#clockCard {{ background: {s['field']}; {field_edges} border-radius: {r + 2}px; }}
+QTimeEdit#clockTimeEdit {{ font-size: 18pt; font-weight: 300; padding: 2px 8px; min-width: 96px; }}
+QSpinBox#clockSpin {{ font-size: 12pt; padding: 4px; }}
+QPushButton#clockChip {{ background: {s['raised']}; {raised_edges} border-radius: 14px; color: {TEXT};
+    padding: 5px 4px; font-size: 8.5pt; }}
+QPushButton#clockChip:hover {{ background: {s['item_hover']}; }}
+QPushButton#clockButton {{ background: {s['raised']}; {raised_edges} border-radius: 17px; color: {TEXT};
+    padding: 6px 16px; font-weight: 600; }}
+QPushButton#clockButton:hover {{ background: {s['raised_hover']}; }}
+QPushButton#clockButton:disabled {{ color: {ICON_DISABLED}; }}
+QPushButton#clockButton[kind="primary"] {{ background: {s['primary']}; border: 1px solid {s['primary_top']};
+    border-bottom-color: {s['primary_bottom']}; color: {s['primary_text']}; }}
+QPushButton#clockButton[kind="primary"]:hover {{ background: {s['primary_hover']}; }}
+QPushButton#clockButton[kind="danger"] {{ background: {DANGER}; border: 1px solid {DANGER}; color: #ffffff; }}
+QFrame#clockAlert {{ background: {s['popup']}; border: 1px solid {ACCENT_SOFT_BORDER}; border-radius: {r + 6}px; }}
+QLabel#clockAlertTitle {{ color: {TEXT}; font-size: 15pt; font-weight: 600; }}
 """
 
 
@@ -399,7 +457,7 @@ class _RoundedPopups(QObject):
 _popups = _RoundedPopups()
 
 # The floating bars that get a real soft shadow in light mode
-_SHADOW_NAMES = {"commandBar", "toolBar", "editorBar", "penPanel", "formatBar"}
+_SHADOW_NAMES = {"commandBar", "toolBar", "editorBar", "penPanel", "formatBar", "clockAlert"}
 
 
 def _wants_shadow(widget):
