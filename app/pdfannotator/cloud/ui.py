@@ -75,7 +75,7 @@ class DriveDesktopDialog(QDialog):
             "Google Drive isn't on this PC yet" if not installed else "Google Drive isn't running",
             "Google Drive for desktop is Google's free app that puts your Drive on this PC (as a \"Google Drive\" "
             "drive, usually G:). Open files from it here and Google syncs every save automatically. Nothing else "
-            "needs setting up in Aupedean."))
+            "needs setting up in AUPedean."))
         steps = ("1. Download and install Google Drive for desktop.\n2. Sign in with your Google account when it "
                  "asks.\n3. Come back here and choose Open from Google Drive again." if not installed else
                  "Start Google Drive and sign in if it asks, then choose Open from Google Drive again.")
@@ -131,7 +131,7 @@ class ConnectDialog(QDialog):
         steps.setContentsMargins(0, 0, 0, 0)
         steps.setSpacing(8)
         for number, text, buttons in (
-            ("1", "Create a Google Cloud project (any name, e.g. \"Aupedean\").",
+            ("1", "Create a Google Cloud project (any name, e.g. \"AUPedean\").",
              [("Open Google Cloud", CLOUD_CONSOLE["project"])]),
             ("2", "Enable the Google Drive API and the Apps Script API in that project.",
              [("Drive API", CLOUD_CONSOLE["drive_api"]), ("Apps Script API", CLOUD_CONSOLE["script_api"])]),
@@ -345,7 +345,7 @@ class DriveBrowser(QDialog):
                 usable = meta.get("mimeType") == FOLDER or (self.mode == "open" and is_openable(meta))
                 if not usable:
                     item.setForeground(0, QColor(theme.ICON_DISABLED))
-                    item.setToolTip(0, "This kind of file can't be opened in Aupedean Annotator")
+                    item.setToolTip(0, "This kind of file can't be opened in AUPedean Annotator")
                 self.tree.addTopLevelItem(item)
             self.status.setText(f"{len(files)} item{'s' if len(files) != 1 else ''}" if files else "Empty")
 
@@ -524,7 +524,7 @@ class SigningSetupDialog(QDialog):
         config = signing.load_config()
         if config:
             QDesktopServices.openUrl(QUrl(config["service_url"]))
-            self._log("In the browser: choose your account, Advanced, Go to Aupedean Sign (unsafe), Allow. "
+            self._log("In the browser: choose your account, Advanced, Go to AUPedean Sign (unsafe), Allow. "
                       "Then press Check here.")
 
     def _check(self):
@@ -636,7 +636,7 @@ class RequestSignatureDialog(QDialog):
             "The signer gets an email with a link. Only they can open it (a code is sent to their inbox). They "
             "sign on the document in their browser, and the signature is added to this PDF automatically."
             if self.mode == "service" else
-            "Type the signer's email and press Send: Aupedean emails it to them, they sign in their web browser, "
+            "Type the signer's email and press Send: AUPedean emails it to them, they sign in their web browser, "
             "and the signature comes back into this PDF by itself. Or leave the email empty to make a signing file "
             "to send by WhatsApp or any way you like."))
         body = QHBoxLayout()
@@ -880,7 +880,7 @@ class SignAccountDialog(QDialog):
         if session:
             self.status.setText(f"Signed in as {session['email']}.")
         elif not sign_service.service_url():
-            self.status.setText("No signature service yet. Whoever looks after Aupedean for you sets one up once "
+            self.status.setText("No signature service yet. Whoever looks after AUPedean for you sets one up once "
                                 "(Set Up a Service), then everyone just signs in here.")
 
     def _client(self):
@@ -957,7 +957,7 @@ SETUP_TIPS = {
         "accounts.</li>"
         "<li>If asked to add a website or choose a plan, skip it: no domain is needed and the "
         "<b>Free</b> plan is enough.</li>"
-        "<li>Aupedean creates the rest itself: the <i>aupedean-sign</i> Worker, its D1 database and a "
+        "<li>AUPedean creates the rest itself: the <i>aupedean-sign</i> Worker, its D1 database and a "
         "<i>workers.dev</i> web address.</li>"
         "</ol>"
         "Free plan limits (100,000 requests a day) are far more than signing needs."),
@@ -966,7 +966,7 @@ SETUP_TIPS = {
         "<ol>"
         "<li>Click to open <b>My Profile &gt; API Tokens</b> (sign in if asked).</li>"
         "<li>Click <b>Create Token</b>, scroll to <b>Create Custom Token</b> and click <b>Get started</b>.</li>"
-        "<li>Token name: <i>Aupedean Sign</i>.</li>"
+        "<li>Token name: <i>AUPedean Sign</i>.</li>"
         "<li>Under <b>Permissions</b> add three rows (use <b>+ Add more</b>):"
         "<br>&nbsp;&bull; Account &nbsp;|&nbsp; Workers Scripts &nbsp;|&nbsp; <b>Edit</b>"
         "<br>&nbsp;&bull; Account &nbsp;|&nbsp; D1 &nbsp;|&nbsp; <b>Edit</b>"
@@ -995,7 +995,7 @@ SETUP_TIPS = {
         "<b>Brevo API key</b>"
         "<ol>"
         "<li>Click to open <b>SMTP &amp; API &gt; API Keys</b> (sign in if asked).</li>"
-        "<li>Click <b>Generate a new API key</b> and name it <i>Aupedean Sign</i>.</li>"
+        "<li>Click <b>Generate a new API key</b> and name it <i>AUPedean Sign</i>.</li>"
         "<li>Leave the <b>MCP</b> option <b>off</b>: a key made for MCP (a long code starting with eyJ) "
         "is refused by Brevo's API.</li>"
         "<li><b>Copy the key</b> and paste it below. Brevo shows it only once.</li>"
@@ -1019,7 +1019,7 @@ class ServiceSetupDialog(QDialog):
         self._progress.text.connect(lambda t: self.log.appendPlainText(t))
         layout = _dialog_layout(self)
         layout.addLayout(_header("Set up the signature service (one time)",
-                                 "Two free accounts and two keys; Aupedean installs everything else. Nobody else "
+                                 "Two free accounts and two keys; AUPedean installs everything else. Nobody else "
                                  "has to do this: they just sign in with their email."))
         for number, text, caption, url in (
             ("1", "Create a free Cloudflare account (no card needed).", "Cloudflare", "https://dash.cloudflare.com/sign-up"),
@@ -1108,10 +1108,10 @@ class ServiceSetupDialog(QDialog):
             self.log.appendPlainText(f"Installed at {url}")
             _settings().setValue("sign/my_email", owner)
             if hosted:
-                share = ("To ship it with Aupedean, put this in app/assets/sign_service.json before building:\n"
+                share = ("To ship it with AUPedean, put this in app/assets/sign_service.json before building:\n"
                          f'{{"url": "{url}"}}\n\nClients then just sign in with their email.')
             else:
-                share = "Give this address to anyone else who uses Aupedean with you."
+                share = "Give this address to anyone else who uses AUPedean with you."
             QMessageBox.information(self, "Set Up", f"The signature service is ready:\n{url}\n\n{share} "
                                     "Now sign in with your email.")
             self.accept()
@@ -1707,7 +1707,7 @@ class CloudController(QObject):
             how = ("They click the link in the email and sign." if quick else
                    "They get an email with a link, confirm it's their inbox with a code, and sign.")
             QMessageBox.information(w, "Request Signature", f"Sent to {req.signer_email}.\n\n{how} You get an email "
-                                    "when they have signed, and Aupedean adds the signature to this PDF by itself "
+                                    "when they have signed, and AUPedean adds the signature to this PDF by itself "
                                     "(it checks every minute while it's open).")
 
         def failed(exc):
@@ -1752,7 +1752,7 @@ class CloudController(QObject):
         sign from the link, and it comes back by itself). False when there's
         no signature service to send it through: a signing file is made instead."""
         if not sign_service.service_url():
-            QMessageBox.information(self.window, "Request Signature", "Sending straight from Aupedean needs the "
+            QMessageBox.information(self.window, "Request Signature", "Sending straight from AUPedean needs the "
                                     "signature service, which isn't set up yet. A signing file is made instead: "
                                     "use Email It to send it.")
             return False

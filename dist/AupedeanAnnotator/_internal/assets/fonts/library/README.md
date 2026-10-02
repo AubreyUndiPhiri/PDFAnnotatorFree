@@ -1,6 +1,6 @@
 # Bundled font library
 
-These fonts ship with Aupedean Annotator so they are available on every PC.
+These fonts ship with AUPedean Annotator so they are available on every PC.
 They come from the Google Fonts repository (https://github.com/google/fonts)
 and each family's licence is in its folder. All of these licences allow the
 fonts to be bundled with software and embedded in documents.

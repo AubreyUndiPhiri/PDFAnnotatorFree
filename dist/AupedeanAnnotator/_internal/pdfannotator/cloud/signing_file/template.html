@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sign: {{TITLE}}</title>
-<!-- Made with Aupedean Annotator. Everything happens in this browser: the
+<!-- Made with AUPedean Annotator. Everything happens in this browser: the
      document never leaves this device until you send the signed copy back. -->
 <style>
   :root { --ink:#1b2236; --muted:#5d6781; --accent:#4f46e5; --line:#dfe4f0; --bad:#dc2626; --ok:#15803d; }
@@ -191,7 +191,7 @@
     $('barText').querySelector('b').textContent = name;
   };
 
-  // ---- the signed PDF: the signature drawn into the real document, plus a receipt for Aupedean
+  // ---- the signed PDF: the signature drawn into the real document, plus a receipt for AUPedean
   function b64ToBytes(b64) { var s = atob(b64), a = new Uint8Array(s.length); for (var i = 0; i < s.length; i++) a[i] = s.charCodeAt(i); return a; }
   function bytesToB64(bytes) { var s = ''; for (var i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); }
   function safeName(t) { return t.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'document'; }
@@ -205,13 +205,13 @@
     page.drawImage(sig, {x: r[0] + (bw - w) / 2, y: r[1] + (bh - h) / 2, width: w, height: h});
     var when = new Date(), font = await pdf.embedFont(L.StandardFonts.Helvetica);
     var line = 'Signed by ' + state.name + (state.email ? ' (' + state.email + ')' : '') + ', ' +
-               when.toISOString().slice(0, 16).replace('T', ' ') + ' UTC, with an Aupedean signing file';
+               when.toISOString().slice(0, 16).replace('T', ' ') + ' UTC, with an AUPedean signing file';
     page.drawText(line, {x: r[0], y: r[1] - 7, size: 5.5, font: font, color: L.rgb(0.35, 0.38, 0.45)});
     var receipt = {format: 'aupedean-signature/1', request_id: D.id, token: D.token, name: state.name,
                    email: state.email, signed_at: when.toISOString(), method: state.method,
                    signature_png: state.png.split(',')[1], user_agent: navigator.userAgent};
     await pdf.attach(new TextEncoder().encode(JSON.stringify(receipt)), 'aupedean-signature.json',
-                     {mimeType: 'application/json', description: 'Aupedean Annotator signature receipt',
+                     {mimeType: 'application/json', description: 'AUPedean Annotator signature receipt',
                       creationDate: when, modificationDate: when});
     pdf.setModificationDate(when);
     return await pdf.save();
@@ -247,14 +247,14 @@
     state.fileName = safeName(D.title) + ' - signed by ' + safeName(state.name) + '.pdf';
     $('bar').classList.add('hidden'); $('doneCard').classList.remove('hidden');
     $('doneText').textContent = 'Send the signed PDF back to ' + (D.requester_name || D.requester_email || 'the sender') +
-        '. They open it in Aupedean Annotator and your signature is added to their copy.';
+        '. They open it in AUPedean Annotator and your signature is added to their copy.';
     $('emailBtn').classList.toggle('hidden', !D.requester_email);
     window.scrollTo({top: 0, behavior: 'smooth'});
     if (!silent) share();
   }
   $('finishBtn').onclick = function () { finish(false); };
 
-  // ---- self-test (used by Aupedean's tests in a headless browser): sign and print the PDF
+  // ---- self-test (used by AUPedean's tests in a headless browser): sign and print the PDF
   if (location.hash === '#selftest') {
     openPad(); $('name').value = 'Test Signer'; $('email').value = 'test@example.com'; setMode('type');
     $('agree').checked = true; $('adoptBtn').onclick();

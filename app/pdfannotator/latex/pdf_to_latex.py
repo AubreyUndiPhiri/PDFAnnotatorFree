@@ -115,7 +115,7 @@ class PdfToLatex(PdfToDocx):
         head = texutil.preamble(first.rect.width, first.rect.height, margins, main_font, body_size, project)
         source_name = Path(self.source).name if isinstance(self.source, (str, Path)) else "a PDF"
         tex = "\n".join([
-            f"% Converted from {source_name} by Aupedean Annotator.",
+            f"% Converted from {source_name} by AUPedean Annotator.",
             "% Compile with XeLaTeX (on Overleaf: Menu > Compiler > XeLaTeX).",
             head,
             "",

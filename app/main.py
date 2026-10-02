@@ -13,7 +13,7 @@ def main():
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("AupedeanAnnotator.App")
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Aupedean Annotator")
+    app.setApplicationName("AUPedean Annotator")
     app.setOrganizationName("AupedeanAnnotator")
     app.setWindowIcon(QIcon(resource_path("assets", "aupedean_annotator.svg")))
     theme.apply(app)

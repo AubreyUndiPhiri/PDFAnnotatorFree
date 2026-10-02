@@ -183,7 +183,7 @@ class ExactTex:
     # ---- the document
     def document(self, source_name, first_w, first_h, page_blocks, background_file):
         head = [
-            f"% Converted from {source_name} by Aupedean Annotator, keeping the exact layout.",
+            f"% Converted from {source_name} by AUPedean Annotator, keeping the exact layout.",
             "% Compile with XeLaTeX (on Overleaf: Menu > Compiler > XeLaTeX).",
             "% Each page is \\PDFPage{background page}{text}: the background holds the page's lines,",
             "% tables and pictures; \\PT{x}{y}{text} puts text with its baseline at (x, y) points from",

@@ -1,4 +1,4 @@
-"""The Aupedean Sign service (Cloudflare Worker), run for real in a headless
+"""The AUPedean Sign service (Cloudflare Worker), run for real in a headless
 browser: SQLite (sql.js) plays Cloudflare's D1 database and a stub keeps the
 emails Brevo would send. worker_harness.html holds the scenario.
 

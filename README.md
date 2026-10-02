@@ -1,4 +1,4 @@
-# Aupedean Annotator
+# AUPedean Annotator
 
 A Windows PDF annotation app for reviewing and marking up documents: notes,
 highlights, freehand ink, shapes, stamps, signatures, measurements and page
@@ -180,7 +180,7 @@ the page preview, and **Send for Signature**. That's it:
   account; phones work), tap **Sign here**, draw or type their signature,
   tick "I agree" and tap **Finish and send**. They can download a copy of
   what they signed.
-- Aupedean notices by itself (it checks every minute while it's open),
+- AUPedean notices by itself (it checks every minute while it's open),
   stamps the signature into your original with a line saying who signed,
   that their email was verified, and when, and saves it. If the PDF is in
   Google Drive, Google Drive for desktop syncs it. You also get a "Signed"
@@ -191,7 +191,7 @@ the page preview, and **Send for Signature**. That's it:
   The service deletes it once the signature is collected, or when the link
   expires.
 
-This goes through **Aupedean Sign**, a small service that runs in *your own*
+This goes through **AUPedean Sign**, a small service that runs in *your own*
 free Cloudflare account and sends email through *your own* free Brevo
 account (300 emails a day; each request uses about three, so roughly 100
 requests a day). No card is needed for either.
@@ -205,7 +205,7 @@ requests a day). No card is needed for either.
   > D1 > Edit and Account > Account Settings > Read), a free Brevo account
   and an API key (SMTP & API > API Keys), paste both, choose who may send
   requests (only you, your email's domain, a list, or anyone), and
-  **Install**. Aupedean creates the database and installs the service; it
+  **Install**. AUPedean creates the database and installs the service; it
   gets an address like `https://aupedean-sign.<name>.workers.dev`. Give that
   address to anyone else who uses it. Copying it into
   `app/assets/sign_service.json` as `{"url": "..."}` builds it into the exe.
@@ -213,10 +213,10 @@ requests a day). No card is needed for either.
   `page.html`).
 
 Without a service there's also the **signing file**: Request Signature >
-Make a Signing File. Aupedean makes one web page with the document in it
+Make a Signing File. AUPedean makes one web page with the document in it
 (Documents > Aupedean Signing Files); send it yourself (*Copy File* and paste
 it into WhatsApp or an email). The signer opens it in a browser, signs on the
-document and sends the signed PDF back; open it in Aupedean, use *Add a
+document and sends the signed PDF back; open it in AUPedean, use *Add a
 Signed Copy*, or save it to Downloads, and the signature goes into your
 original. Nothing to set up, but it comes back by hand and the email isn't
 verified. The signed PDF is made in the browser with pdf-lib (MIT licence,
@@ -229,7 +229,7 @@ The **Google Drive** menu (code in `app/pdfannotator/cloud/`):
 - **Syncing uses Google Drive for desktop**, Google's free app
   (https://www.google.com/drive/download/). Once it's installed and signed
   in, your Drive is on the PC as a "Google Drive" drive (usually G:), and
-  Google syncs every save. Nothing needs setting up in Aupedean for this.
+  Google syncs every save. Nothing needs setting up in AUPedean for this.
   - **Open from Google Drive** (Ctrl+Shift+O, also in the File menu): the
     usual Open dialog, starting in My Drive.
   - **Save to Google Drive**: Save As, starting in My Drive. Files already

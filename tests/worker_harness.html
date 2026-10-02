@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"><title>Aupedean Sign worker test</title></head>
+<head><meta charset="utf-8"><title>AUPedean Sign worker test</title></head>
 <body>
 <pre id="out">running</pre>
 <script src="sql-wasm.js"></script>
@@ -36,7 +36,7 @@ try {
     }
     return realFetch(url, opts);
   };
-  const env = {DB, BREVO_KEY: 'brevo-key', SENDER: 'sign@owner.example', SENDER_NAME: 'Aupedean Sign',
+  const env = {DB, BREVO_KEY: 'brevo-key', SENDER: 'sign@owner.example', SENDER_NAME: 'AUPedean Sign',
                OWNER: 'owner@owner.example', ALLOW: '@team.example, friend@gmail.com'};
   const pending = [];
   const ctx = {waitUntil: (p) => pending.push(p)};

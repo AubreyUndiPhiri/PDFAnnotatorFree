@@ -13,14 +13,14 @@ from PySide6.QtCore import Qt, QSize, QRectF
 from .document_tab import DocumentTab
 from .editor_tab import EditorTab
 from . import fonts, icons, theme
-from .dialogs import SignaturePadDialog, PropertiesDialog, ToolStylesDialog, FindBar, HandwritingFontDialog
+from .dialogs import SignaturePadDialog, PropertiesDialog, ToolStylesDialog, FindBar, HandwritingFontDialog, AboutDialog
 from .tools import (
     Tool, STAMP_NAMES, UNITS, STYLED_TOOLS, DEFAULT_TOOL_STYLE,
     TOOL_STYLE_OVERRIDES, TOOL_SHORTCUTS, TOOL_LABELS, TOOL_HINTS, TOOL_ICONS,
     TOOL_GROUPS, WIDTH_TOOLS, FONT_TOOLS, UNIT_TOOLS, ERASER_MODES, ERASER_SIZES,
 )
 
-APP_TITLE = "Aupedean Annotator"
+APP_TITLE = "AUPedean Annotator"
 
 
 def resource_path(*parts):
@@ -1053,6 +1053,7 @@ class MainWindow(QMainWindow):
             button.setText("Request Signature")
             button.setPopupMode(QToolButton.InstantPopup)   # the three ways, Quick Email first
         self._build_window_menu(menubar)
+        self._build_help_menu(menubar)
         self._collect_pdf_only_actions()
 
     def _collect_pdf_only_actions(self):
@@ -1062,7 +1063,8 @@ class MainWindow(QMainWindow):
         shared = {self.act_new, self.act_new_word, self.act_new_latex, self.act_open, self.act_save,
                   self.act_save_as, self.act_save_all, self.act_print, self.act_undo, self.act_redo, self.act_cut,
                   self.act_copy, self.act_paste, self.act_find, self.act_zoom_in, self.act_zoom_out,
-                  self.act_actual, self.act_fullscreen, self.act_dark, self.nav_toolbar_action, self.act_ribbon}
+                  self.act_actual, self.act_fullscreen, self.act_dark, self.nav_toolbar_action, self.act_ribbon,
+                  self.act_about}
         shared |= self.cloud.shared_actions()
         found = []
 
@@ -1260,6 +1262,13 @@ class MainWindow(QMainWindow):
     def _build_window_menu(self, menubar):
         self.window_menu = menubar.addMenu("&Window")
         self._rebuild_window_menu()
+
+    def _build_help_menu(self, menubar):
+        m = menubar.addMenu("&Help")
+        self.act_about = self._add_menu_action(m, f"About {APP_TITLE}", self.show_about)
+
+    def show_about(self):
+        AboutDialog(resource_path("assets", "aupedean_annotator.svg"), self).exec()
 
     def _rebuild_window_menu(self):
         self.window_menu.clear()

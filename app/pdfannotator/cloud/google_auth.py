@@ -224,9 +224,9 @@ class _Catcher(http.server.BaseHTTPRequestHandler):
             return
         type(self).result = {k: v[0] for k, v in query.items()}
         ok = "code" in query
-        page = ("<h2>Signed in to Aupedean Annotator</h2><p>You can close this tab and go back to the app.</p>" if ok
+        page = ("<h2>Signed in to AUPedean Annotator</h2><p>You can close this tab and go back to the app.</p>" if ok
                 else "<h2>Sign-in was cancelled</h2><p>You can close this tab.</p>")
-        body = (f"<!doctype html><meta charset=utf-8><title>Aupedean Annotator</title>"
+        body = (f"<!doctype html><meta charset=utf-8><title>AUPedean Annotator</title>"
                 f"<body style=\"font-family:Segoe UI,sans-serif;margin:3em;color:#1b2236\">{page}</body>").encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")

@@ -496,3 +496,63 @@ class FindBar(QDialog):
     def focus_input(self):
         self.query_edit.selectAll()
         self.query_edit.setFocus()
+
+
+# ---------------------------------------------------------------------------
+# About
+# ---------------------------------------------------------------------------
+
+APP_NAME = "AUPedean Annotator"
+APP_VERSION = "2.0"
+CREATOR = "Aubrey Undi Phiri"
+COMPANY = "Tutoяia∫Σ"
+
+
+class AboutDialog(QDialog):
+    """Help > About: what the app is, where the name comes from, who made it."""
+
+    def __init__(self, icon_path=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"About {APP_NAME}")
+        self.setMinimumWidth(540)
+        layout = _dialog_layout(self)
+
+        top = QHBoxLayout()
+        top.setSpacing(16)
+        if icon_path:
+            logo = QLabel()
+            logo.setPixmap(QIcon(icon_path).pixmap(72, 72))
+            logo.setAlignment(Qt.AlignTop)
+            top.addWidget(logo)
+        top.addLayout(_header(APP_NAME, f"Version {APP_VERSION} · Read, mark up, sign and convert PDFs, "
+                                        "and write in Word and LaTeX, all in one place."), 1)
+        layout.addLayout(top)
+
+        accent = theme.ACCENT
+        body = QLabel(
+            f"<h4 style='color:{accent}; margin:0'>The name</h4>"
+            f"<p><b>AUP</b> is for <b>{CREATOR}</b>, whose initials those are. "
+            "<b>edean</b> was borrowed from the grand words of the world, like <i>Mediterranean</i>, "
+            "<i>Herculean</i> and <i>Promethean</i>. Put them together and you get <b>AUPedean</b>: "
+            "it sounds like a sunlit sea or an ancient empire, but it is really a mathematician "
+            "signing his work. Say it however you like. The app won't correct you; "
+            "it has PDFs to annotate.</p>"
+            f"<h4 style='color:{accent}; margin:0'>The creator</h4>"
+            f"<p>{APP_NAME} was designed and built by <b>{CREATOR}</b>. Aubrey holds a Bachelor's "
+            "degree in Mathematics and Physics and a Master of Science in Mathematical Sciences, "
+            f"and is the founder of <b>{COMPANY}</b>. That background explains why a PDF annotator "
+            "comes with a formula editor, a scientific calculator, a protractor and a compass: "
+            "some documents simply need more maths.</p>"
+            f"<p style='color:{theme.TEXT_MUTED}'>© 2026 {CREATOR}. All rights reserved.<br>"
+            "Built with Qt for Python (PySide6), PyMuPDF, pdf2docx, python-docx, fontTools and "
+            "matplotlib. The bundled fonts are under their own open licences.</p>"
+        )
+        body.setObjectName("aboutText")
+        body.setWordWrap(True)
+        body.setTextFormat(Qt.RichText)
+        body.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(body)
+
+        close_btn = _primary("Close")
+        close_btn.clicked.connect(self.accept)
+        layout.addLayout(_button_row(close_btn))

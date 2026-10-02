@@ -1,17 +1,17 @@
-// Aupedean Sign: a small signing service on Cloudflare Workers (free plan).
+// AUPedean Sign: a small signing service on Cloudflare Workers (free plan).
 //
-// Installed into the owner's Cloudflare account by Aupedean Annotator
+// Installed into the owner's Cloudflare account by AUPedean Annotator
 // (Signature Service Setup). It keeps everything in one D1 database and
 // sends email through the owner's Brevo account.
 //
-//  - People using Aupedean sign in with their email: a 6-digit code is
+//  - People using AUPedean sign in with their email: a 6-digit code is
 //    emailed to them (only the addresses in ALLOW may use the service).
 //  - A request's document arrives already encrypted (AES-GCM); the key is
 //    only ever in the signer's emailed link (after the #, which browsers
 //    never send to servers), so what's stored here can't be read.
 //  - The signer opens the link, gets a fresh code by email (so only that
 //    inbox can open it), reads the document, signs; the encrypted signature
-//    is kept until the requester's Aupedean collects it, then deleted.
+//    is kept until the requester's AUPedean collects it, then deleted.
 //
 // A quick request (listed in quick_requests) skips the signer's code: the
 // emailed link alone opens it, for when ease matters more than proof.
@@ -70,13 +70,13 @@ async function route(req, env, ctx) {
       'x-frame-options': 'DENY', 'x-content-type-options': 'nosniff'}});
   }
 
-  // ---- signing in to Aupedean
+  // ---- signing in to AUPedean
   if (path === '/api/login/code' && method === 'POST') {
     const body = await readJson(req);
     const email = cleanEmail(body.email);
     if (!allowed(env, email)) fail(403, 'not-allowed');
-    await sendCode(env, 'login:' + email, email, 'Your Aupedean sign-in code',
-                   (code) => `Your code to sign in to Aupedean Annotator is <b style="font-size:22px">${code}</b>.` +
+    await sendCode(env, 'login:' + email, email, 'Your AUPedean sign-in code',
+                   (code) => `Your code to sign in to AUPedean Annotator is <b style="font-size:22px">${code}</b>.` +
                              `<br><br>It works for ${CODE_MINUTES} minutes. If you didn't ask for it, ignore this email.`);
     return json({ok: true});
   }
@@ -90,7 +90,7 @@ async function route(req, env, ctx) {
     return json({ok: true, token: token, email: email});
   }
 
-  // ---- the requester's Aupedean (signed in)
+  // ---- the requester's AUPedean (signed in)
   if (path === '/api/me' || path.startsWith('/api/requests')) {
     const user = await session(req, env);
     if (path === '/api/me') return json({ok: true, email: user});
@@ -156,7 +156,7 @@ async function route(req, env, ctx) {
       ]);
       const notice = mail(env, r.owner, `Signed: ${r.title}`,
         `<b>${esc(r.signer_email)}</b> signed <b>${esc(r.title)}</b>.<br><br>` +
-        `Aupedean Annotator adds the signature to your document the next time it checks (every minute while it's open).`);
+        `AUPedean Annotator adds the signature to your document the next time it checks (every minute while it's open).`);
       ctx.waitUntil(notice.catch(() => null));
       return json({ok: true, signed_at: now});
     }
@@ -352,11 +352,11 @@ async function mail(env, to, subject, html, text) {
       .bind(day).run();
   }
   const page = `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:15px;color:#1b2236;max-width:560px">${html}` +
-               `<br><br><span style="color:#8b93a7;font-size:12px">Sent by Aupedean Sign.</span></div>`;
+               `<br><br><span style="color:#8b93a7;font-size:12px">Sent by AUPedean Sign.</span></div>`;
   const resp = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
     headers: {'api-key': env.BREVO_KEY, 'content-type': 'application/json', 'accept': 'application/json'},
-    body: JSON.stringify({sender: {email: env.SENDER, name: env.SENDER_NAME || 'Aupedean Sign'}, to: [{email: to}],
+    body: JSON.stringify({sender: {email: env.SENDER, name: env.SENDER_NAME || 'AUPedean Sign'}, to: [{email: to}],
                           subject: subject, htmlContent: page, textContent: text || subject})
   });
   if (!resp.ok) fail(502, 'email-failed', (await resp.text()).slice(0, 300));

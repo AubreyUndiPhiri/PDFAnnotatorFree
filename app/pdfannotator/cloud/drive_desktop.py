@@ -4,7 +4,7 @@ Once it's installed and signed in, Google Drive appears on the PC (a "Google
 Drive" drive, usually G:, with "My Drive" and "Shared drives" in it; or, in
 mirror mode, a "My Drive" folder in the user folder). Files opened from
 there are ordinary files to this app, and Google syncs every save, so no
-Google setup is needed in Aupedean. This module finds those folders.
+Google setup is needed in AUPedean. This module finds those folders.
 
 No Qt here.
 """

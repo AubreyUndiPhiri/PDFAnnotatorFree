@@ -108,10 +108,10 @@ def _deploy(session, title, files):
     project = _script_call(session, "POST", "/projects", {"title": title})
     script_id = project["scriptId"]
     _script_call(session, "PUT", f"/projects/{script_id}/content", {"files": files})
-    version = _script_call(session, "POST", f"/projects/{script_id}/versions", {"description": "Aupedean Annotator"})
+    version = _script_call(session, "POST", f"/projects/{script_id}/versions", {"description": "AUPedean Annotator"})
     deployment = _script_call(session, "POST", f"/projects/{script_id}/deployments", {
         "versionNumber": version["versionNumber"], "manifestFileName": "appsscript",
-        "description": "Aupedean Annotator signing links"})
+        "description": "AUPedean Annotator signing links"})
     url = next((ep["webApp"]["url"] for ep in deployment.get("entryPoints", [])
                 if ep.get("entryPointType") == "WEB_APP" and ep.get("webApp", {}).get("url")), None)
     if not url:
@@ -124,18 +124,18 @@ def setup_service(session, progress=lambda text: None):
     save their addresses. Returns the config."""
     drive = DriveClient(session)
     progress("Creating the \"Aupedean Signing\" folder in your Drive...")
-    root = drive.ensure_folder(ROOT_FOLDER, "root", description="Signature requests made with Aupedean Annotator. "
+    root = drive.ensure_folder(ROOT_FOLDER, "root", description="Signature requests made with AUPedean Annotator. "
                                                                  "Deleting a folder here cancels that request.")
     secret = secrets.token_hex(32)
     service_src, _page_src, _html = script_sources(secret, root["id"], "")
     progress("Creating the signing service (runs as you, only in that folder)...")
-    service_id, service_dep, service_url = _deploy(session, "Aupedean Sign - service", [
+    service_id, service_dep, service_url = _deploy(session, "AUPedean Sign - service", [
         {"name": "appsscript", "type": "JSON", "source": json.dumps(_SERVICE_MANIFEST)},
         {"name": "Code", "type": "SERVER_JS", "source": service_src},
     ])
     _s, page_src, page_html = script_sources(secret, root["id"], service_url)
     progress("Creating the signing page (signers sign in with Google)...")
-    page_id, page_dep, page_url = _deploy(session, "Aupedean Sign - page", [
+    page_id, page_dep, page_url = _deploy(session, "AUPedean Sign - page", [
         {"name": "appsscript", "type": "JSON", "source": json.dumps(_PAGE_MANIFEST)},
         {"name": "Code", "type": "SERVER_JS", "source": page_src},
         {"name": "page", "type": "HTML", "source": page_html},
@@ -348,9 +348,9 @@ def stamp_signature(doc, req, png, result):
         pass
     email = f" ({result['email']})" if result.get("email") else ""
     how = {"Google sign-in": "verified by Google sign-in",
-           "email code": "email verified by Aupedean Sign",
-           "email link": "from the link emailed by Aupedean Sign"}.get(result.get("verified_by", "Google sign-in"),
-                                                                "with an Aupedean signing file")
+           "email code": "email verified by AUPedean Sign",
+           "email link": "from the link emailed by AUPedean Sign"}.get(result.get("verified_by", "Google sign-in"),
+                                                                "with an AUPedean signing file")
     line = f"Signed by {result.get('name', '')}{email}, {when}, {how}"
     box = fitz.Rect(rect.x0, rect.y1 + 1, max(rect.x1, rect.x0 + 260), rect.y1 + 12) & page.rect
     if not box.is_empty:

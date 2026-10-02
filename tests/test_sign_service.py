@@ -1,6 +1,6 @@
-"""Signature requests by email, end to end: Aupedean encrypts and sends,
+"""Signature requests by email, end to end: AUPedean encrypts and sends,
 the signing page (in headless Chrome) verifies the email code, decrypts and
-signs, and Aupedean collects the signature by itself and stamps the original.
+signs, and AUPedean collects the signature by itself and stamps the original.
 The Cloudflare service is played by fake_sign_service.py (the real worker is
 tested in test_sign_worker.py).
 
@@ -100,7 +100,7 @@ def test_request_sign_in_browser_and_collect_automatically(app, service, tmp_pat
     assert 'id="selftest-done">signed<' in out.stdout, out.stdout[-2000:]
     assert service.requests[req.id]["status"] == "signed"
 
-    # Aupedean notices by itself, stamps the original, and tells the service to delete its copy
+    # AUPedean notices by itself, stamps the original, and tells the service to delete its copy
     win.cloud.service.check()
     deadline = time.time() + 15
     while store.get(req.id).status != signing.APPLIED and time.time() < deadline:
@@ -108,7 +108,7 @@ def test_request_sign_in_browser_and_collect_automatically(app, service, tmp_pat
         time.sleep(0.05)
     assert store.get(req.id).status == signing.APPLIED
     text = fitz.open(original)[0].get_text()
-    assert "Signed by Test Signer (sam@gmail.com)" in text and "email verified by Aupedean Sign" in text
+    assert "Signed by Test Signer (sam@gmail.com)" in text and "email verified by AUPedean Sign" in text
     deadline = time.time() + 10
     while service.requests[req.id]["status"] != "completed" and time.time() < deadline:
         app.processEvents()

@@ -836,7 +836,7 @@ def add_image_stamp(page: fitz.Page, rect, image_bytes: bytes) -> fitz.Annot:
     rect = _fit(fitz.Rect(rect), pix.width, pix.height)
     png = pix.tobytes("png")   # stamps take PNG/JPEG; PNG keeps transparency (a removed background)
     annot = page.add_stamp_annot(rect, stamp=png)
-    annot.set_info(subject="Picture", title="Aupedean Annotator")
+    annot.set_info(subject="Picture", title="AUPedean Annotator")
     annot.update()
     doc = page.parent
     xref = doc.get_new_xref()
@@ -928,7 +928,7 @@ def add_formula(page: fitz.Page, origin, rendered, source, fontsize, color_rgb, 
         height = rendered.width_pt * pix.height / pix.width if pix.width else rendered.height_pt
         rect = fitz.Rect(origin.x, origin.y, origin.x + rendered.width_pt, origin.y + height)
     annot = page.add_stamp_annot(fitz.Rect(rect), stamp=rendered.png)
-    annot.set_info(content=source, subject="Formula", title="Aupedean Annotator")
+    annot.set_info(content=source, subject="Formula", title="AUPedean Annotator")
     annot.update()
     data = {"source": source, "fontsize": float(fontsize), "color": [int(c) for c in color_rgb[:3]],
             "engine": rendered.engine}

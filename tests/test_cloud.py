@@ -186,7 +186,7 @@ def test_signing_setup_request_and_signature_round_trip(app, google, tmp_path):
     session = _signed_in()
     config = signing.setup_service(session)
     service, page = sorted(google.scripts.values(), key=lambda s: s["title"], reverse=True)
-    assert service["title"] == "Aupedean Sign - service" and page["title"] == "Aupedean Sign - page"
+    assert service["title"] == "AUPedean Sign - service" and page["title"] == "AUPedean Sign - page"
     for script in (service, page):
         for f in script["files"]:
             assert "{{" not in f["source"], f"placeholder left in {f['name']}"
@@ -268,12 +268,12 @@ def test_app_opens_drive_pdf_syncs_saves_and_applies_signature(app, google, tmp_
     assert "Synced with Google Drive" in win.status_sync_label.text()
 
     # edit and save in the app: uploaded in the background
-    tab.document.page(0).insert_text((72, 120), "edited in Aupedean")
+    tab.document.page(0).insert_text((72, 120), "edited in AUPedean")
     tab.document.snapshot()
     tab.save()
     assert _wait(app, lambda: google.files[remote["id"]]["meta"]["version"] == "2")
-    assert b"edited in Aupedean" in fitz.open(stream=google.files[remote["id"]]["content"]).tobytes() or \
-        "edited in Aupedean" in fitz.open(stream=google.files[remote["id"]]["content"], filetype="pdf")[0].get_text()
+    assert b"edited in AUPedean" in fitz.open(stream=google.files[remote["id"]]["content"]).tobytes() or \
+        "edited in AUPedean" in fitz.open(stream=google.files[remote["id"]]["content"], filetype="pdf")[0].get_text()
 
     # changed on Drive: the open tab reloads it
     # the upload of that save (and the watcher's follow-up) must be done first: checks skip busy files

@@ -1,10 +1,10 @@
-// Aupedean Annotator: signing page.
+// AUPedean Annotator: signing page.
 //
-// Created in your Google account by Aupedean Annotator. Signers open it from
+// Created in your Google account by AUPedean Annotator. Signers open it from
 // the link you share; they sign in with their Google account, so the email
 // on the signature is the one Google confirmed. It runs as the signer and
 // can only see their email address; the document and the signature pass
-// through the Aupedean signing service in your account.
+// through the AUPedean signing service in your account.
 
 const SECRET = '{{SECRET}}';
 const SERVICE_URL = '{{SERVICE_URL}}';

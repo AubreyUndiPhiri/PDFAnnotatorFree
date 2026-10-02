@@ -1,12 +1,12 @@
-// Aupedean Annotator: signing service.
+// AUPedean Annotator: signing service.
 //
-// Created in your Google account by Aupedean Annotator (Google Drive >
+// Created in your Google account by AUPedean Annotator (Google Drive >
 // Set Up Signing Links). It runs as you, but only ever reads and writes the
 // "Aupedean Signing" folder in your Drive: one folder per signature request,
 // holding the pages to show (page-N.jpg) and request.json; a signer's
 // signature.png and result.json are added to it.
 //
-// It only answers the signing page (the other Aupedean script), which proves
+// It only answers the signing page (the other AUPedean script), which proves
 // each message with an HMAC over a secret the two share.
 
 const SECRET = '{{SECRET}}';

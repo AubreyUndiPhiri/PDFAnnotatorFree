@@ -357,3 +357,20 @@ def test_pen_panel_floats_while_the_ribbon_is_hidden(app):
     assert not w.pen_panel.isVisible() and w.ribbon_shown
     _theme._settings().setValue("ui/pen_panel_vertical", "false")
     w.close()
+
+
+def test_about_dialog_names_the_app_and_its_creator(app):
+    from pdfannotator.dialogs import AboutDialog
+    from pdfannotator.main_window import APP_TITLE, MainWindow, resource_path
+    from PySide6.QtWidgets import QLabel
+
+    assert APP_TITLE == "AUPedean Annotator"
+    dialog = AboutDialog(resource_path("assets", "aupedean_annotator.svg"))
+    text = " ".join(label.text() for label in dialog.findChildren(QLabel))
+    for words in ("AUPedean Annotator", "Aubrey Undi Phiri", "Mediterranean", "Mathematics and Physics",
+                  "Master of Science in Mathematical Sciences", "Tutoяia∫Σ"):
+        assert words in text
+    window = MainWindow()
+    help_menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "&Help")
+    assert window.act_about in help_menu.actions() and window.act_about.text() == "About AUPedean Annotator"
+    window.close()

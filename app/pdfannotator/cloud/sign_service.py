@@ -1,8 +1,8 @@
-"""Aupedean Sign: signature requests by email, through a small service the
+"""AUPedean Sign: signature requests by email, through a small service the
 owner installs once in their own free Cloudflare account (emails go through
 their free Brevo account). See sign_service/worker.js for the service.
 
-- People using Aupedean sign in with their email and a 6-digit code.
+- People using AUPedean sign in with their email and a 6-digit code.
 - A request: the document (pages as pictures + the PDF) is encrypted here
   with a fresh AES-256-GCM key and uploaded; the service emails the signer a
   link holding the key after the "#", which browsers never send to servers.
@@ -404,7 +404,7 @@ def check_brevo(api_key):
     return account.get("email", "").lower(), senders
 
 
-def install(cf_token, brevo_key, owner_email, sender_email, allow="", sender_name="Aupedean Sign",
+def install(cf_token, brevo_key, owner_email, sender_email, allow="", sender_name="AUPedean Sign",
             progress=lambda text: None, wait_online=120, requests_per_day=0, emails_per_day=0):
     """Create (or update) the service in the Cloudflare account and return its address."""
     owner_email, sender_email = owner_email.strip().lower(), sender_email.strip().lower()

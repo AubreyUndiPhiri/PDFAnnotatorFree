@@ -99,7 +99,7 @@ def test_sign_in_browser_and_bring_back(app, tmp_path, monkeypatch):
         time.sleep(0.05)
     assert store.get(req.id).status == signing.APPLIED
     stamped = fitz.open(original)[0].get_text()   # the ORIGINAL got the signature, and was saved
-    assert "Signed by Test Signer (test@example.com)" in stamped and "Aupedean signing file" in stamped
+    assert "Signed by Test Signer (test@example.com)" in stamped and "AUPedean signing file" in stamped
     assert win.tab_for_path(original) is not None and any("signed" in s for s in shown)
 
     # opening the signed copy again doesn't sign twice; it shows the original

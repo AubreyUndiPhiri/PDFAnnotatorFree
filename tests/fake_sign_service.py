@@ -1,5 +1,5 @@
-"""A stand-in for the Aupedean Sign service (worker.js), speaking the same
-API, so Aupedean and the signing page can be tested together without
+"""A stand-in for the AUPedean Sign service (worker.js), speaking the same
+API, so AUPedean and the signing page can be tested together without
 Cloudflare. Codes are always 424242; sent emails are kept in .mails."""
 import http.server
 import json
