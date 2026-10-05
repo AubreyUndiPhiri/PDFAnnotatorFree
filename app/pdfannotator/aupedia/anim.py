@@ -1,4 +1,4 @@
-"""Timing for AUPedia: one clock for everything that moves, easing curves,
+"""Timing for AUPedea: one clock for everything that moves, easing curves,
 and the smooth "hand" noise that makes lines wobble like real ink.
 
 SPEED scales time (tests run the animations many times faster)."""

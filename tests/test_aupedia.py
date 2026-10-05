@@ -1,4 +1,4 @@
-"""AUPedia, the scribble helper: the command catalog, the offline finder,
+"""AUPedea, the scribble helper: the command catalog, the offline finder,
 pointing and clicking (menus, toolbar, risky commands, dialogs), the mouse on
 the scribble, and the Claude loop, run through the real Anthropic SDK over a
 mock HTTP transport (no network, no key needed).
@@ -75,7 +75,7 @@ def test_catalog_lists_every_command_once(win):
     ids = [c.id for c in cat.commands]
     assert len(ids) == len(set(ids)) > 80
     assert cat.get("file/convert_to_word").where() == "File > Convert to Word"
-    assert "help/ask_aupedia" not in ids                       # it doesn't list itself
+    assert "help/ask_aupedea" not in ids and "help/talk_to_aupedea" not in ids                       # it doesn't list itself
     assert not any(i.startswith("window/") for i in ids)        # the tab list changes all the time
     pen = next(c for c in cat.commands if c.action is win.tool_actions[win.Tool.INK])
     assert pen.toolbars                                          # on the ribbon
@@ -123,8 +123,9 @@ def test_risky_commands_ask_first(app, win):
     a.open_bubble()
     tabs = win.tabs.count()
     a.ask("close all tabs", "do")
-    assert wait(app, lambda: a.bubble.confirm_bar.isVisible())
+    assert wait(app, lambda: a.bubble.waiting_for_answer())
     assert "Close All" in a.bubble.confirm_text.text()
+    assert not a.chat_open() and a.mini.kind == "ask" and "Close All" in a.mini.text   # asked over its head
     a.bubble._answer_confirm(False)
     assert wait(app, lambda: done_talking(win))
     assert win.tabs.count() == tabs and "left it alone" in bubble_text(win)
@@ -251,7 +252,7 @@ def test_claude_clicks_then_answers(app, win):
         _message([{"type": "text", "text": "Your **pen** is ready. Draw away!"}], "end_turn"),
     ], seen)
     a.open_bubble()
-    assert "Claude" in a.bubble.status.text()
+    assert "Claude" in a.bubble.status.toolTip()
     a.ask("I want to draw on the page", "do")
     assert wait(app, lambda: done_talking(win) and "Draw away" in bubble_text(win), 15)
     assert win.current_tool == win.Tool.INK
@@ -351,3 +352,46 @@ def test_key_is_saved_encrypted(tmp_path, monkeypatch):
     brain.forget_key()
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")
     assert brain.api_key() == "sk-ant-env"
+
+
+# ---------------------------------------------------------------------------
+# the chat and the little bubble over its head
+# ---------------------------------------------------------------------------
+
+def test_chat_is_small_and_gets_out_of_the_way(app, win):
+    a = win.aupedia
+    a.open_bubble()
+    b = a.bubble
+    assert wait(app, lambda: b.isVisible())
+    assert b.width() <= 320 and b.height() < 330                              # compact
+    assert "AUPedea" in b.view.toPlainText()
+    small = b.height()
+    for i in range(6):
+        b.say(f"Line {i}: " + "a fairly long reply that wraps onto a second line " * 2, instant=True)
+    assert small < b.height() <= small + b.LOG_MAX                            # grows with the talk, up to a point
+    a.ask("pick the pen so I can draw", "do")                                 # a job: the chat tucks itself away
+    assert wait(app, lambda: not b.isVisible())
+    assert wait(app, lambda: done_talking(win) and a.mini.isVisible() and "Pen" in a.mini.text)
+    assert "Pen" in bubble_text(win)                                          # ...and it's in the chat's history
+    x, y = a.mascot.pos_f
+    assert a.mini.geometry().bottom() <= y and a.mini.width() <= a.mini.MAXW  # over its head, small
+    a.mini.clicked.emit()                                                     # click it: the whole chat
+    assert wait(app, lambda: b.isVisible())
+    assert a.mini.kind is None                                                # and the little bubble bows out
+
+
+def test_chat_can_be_dragged_by_its_top(app, win):
+    from PySide6.QtCore import QPoint
+
+    a = win.aupedia
+    a.open_bubble()
+    b = a.bubble
+    assert wait(app, lambda: b.isVisible())
+    wait(app, lambda: False, 0.1)
+    start = b.pos()
+    QTest.mousePress(b, Qt.LeftButton, pos=QPoint(150, 12))
+    QTest.mouseMove(b, QPoint(150 - 60, 12 + 30))
+    QTest.mouseRelease(b, Qt.LeftButton, pos=QPoint(90, 42))
+    assert b.moved_by_hand and (b.pos() - start).manhattanLength() > 40
+    a._place_bubble()                                                         # it stays where it was put
+    assert b.moved_by_hand and (b.pos() - start).manhattanLength() > 40

@@ -1,15 +1,19 @@
-"""The speech bubble: type a question or a job, pick "Show me" or "Do it for
-me", and AUPedia's answers type themselves out (its mouth moves as they do).
-Plus its settings: the Claude API key."""
+"""Talking with AUPedea: the chat (type a question or a job, pick "Show me" or
+"Do it for me"; answers type themselves out as its mouth moves), the little
+speech bubble over its head (what it hears and does while the chat is
+tucked away), and its settings (which AI, key and model)."""
 import html
 import math
 import re
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtCore import (
+    QEasingCurve, QParallelAnimationGroup, QPoint, QPointF, QPropertyAnimation, QRectF, QSize, Qt, QTimer, QUrl,
+    Signal,
+)
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QPainter, QPainterPath, QPen, QTextDocument
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QRadioButton, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFormLayout, QGraphicsOpacityEffect, QHBoxLayout,
+    QLabel, QLineEdit, QPushButton, QRadioButton, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
 from .. import icons, theme
@@ -17,8 +21,7 @@ from ..dialogs import _button_row, _dialog_layout, _header, _primary
 from . import anim, brain
 
 HAND_FONT = "Caveat"
-SUGGESTIONS = ["Summarise this page", "Highlight the title", "Write a note in the margin",
-               "Draw a star in the corner", "Sign this document", "Convert this PDF to Word"]
+SUGGESTIONS = ["Summarise this page", "Highlight the title", "Draw a star", "Convert to Word"]
 CHARS_PER_SECOND = 240
 
 
@@ -36,7 +39,9 @@ def rich(text):
 
 
 class AskBubble(QWidget):
-    """A floating card with a hand-drawn edge and a tail pointing at the scribble."""
+    """The chat: a small see-through card with a hand-drawn edge and a tail pointing at the scribble.
+    It grows with the conversation (up to a point), turns solid while you're over it or typing,
+    fades in and out, and can be dragged by its top."""
     asked = Signal(str, str)          # text, mode ("do" or "show")
     stopped = Signal()
     settings_requested = Signal()
@@ -44,43 +49,53 @@ class AskBubble(QWidget):
     closed = Signal()
     talking = Signal(float)           # how open the mouth is while text types out
     listen_toggled = Signal()
-    WIDTH, HEIGHT = 380, 430
-    TAIL = 18
-    PLACEHOLDER = "Ask me anything, or tell me what to do..."
+    WIDTH = 318
+    TAIL = 14
+    HEAD = 34                          # the draggable top strip
+    LOG_MIN, LOG_MAX = 40, 200
+    REST, ACTIVE = 0.9, 1.0            # see-through until you're over it or typing
+    PLACEHOLDER = "Ask, or tell me what to do..."
 
     def __init__(self, parent=None):
         super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setAttribute(Qt.WA_ShowWithoutActivating, False)
         self.setObjectName("aupediaBubble")
-        self.resize(self.WIDTH, self.HEIGHT)
+        self.setFixedWidth(self.WIDTH)
         self.tail_side = "right"      # the tail points down-right, at the scribble
         self.busy = False
         self._queue = []              # (html, plain) still to type out
-        self._typing = None           # [html, plain, shown]
+        self._typing = None           # [html, plain, shown, started]
         self._log = []                # finished HTML blocks
         self._confirm_cb = None
         self._partial = None          # words heard so far, shown in the input box
+        self._drag = None
+        self._hover = False
+        self.moved_by_hand = False
+        self._anim = None
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(16, 14, 16, 14 + self.TAIL)
-        outer.setSpacing(8)
+        outer.setContentsMargins(12, 8, 12, 10 + self.TAIL)
+        outer.setSpacing(6)
 
         head = QHBoxLayout()
-        title = QLabel("AUPedia")
-        title.setFont(hand_font(26))
+        head.setSpacing(2)
+        title = QLabel("AUPedea")
+        title.setFont(hand_font(22))
         title.setObjectName("aupediaTitle")
         head.addWidget(title)
         self.status = QLabel()
-        self.status.setObjectName("muted")
+        self.status.setObjectName("aupediaStatus")
         head.addWidget(self.status, 1, Qt.AlignBottom)
         for name, tip, signal in (("rotate-left", "Start over", self.reset_requested),
-                                  ("settings", "AUPedia settings", self.settings_requested),
+                                  ("settings", "AUPedea settings", self.settings_requested),
                                   ("close", "Close (Esc)", self.closed)):
             btn = QToolButton()
+            btn.setObjectName("aupediaHeadButton")
             btn.setIcon(icons.icon(name))
+            btn.setIconSize(QSize(14, 14))
             btn.setAutoRaise(True)
             btn.setToolTip(tip)
+            btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(signal.emit)
             head.addWidget(btn)
         outer.addLayout(head)
@@ -91,7 +106,10 @@ class AskBubble(QWidget):
         self.view.setFrameShape(QTextBrowser.NoFrame)
         self.view.viewport().setAutoFillBackground(False)
         self.view.setStyleSheet("QTextBrowser { background: transparent; border: none; }")
-        outer.addWidget(self.view, 1)
+        self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)       # on only once it's at its tallest
+        self.view.setFixedHeight(self.LOG_MIN)
+        outer.addWidget(self.view)
 
         self.chips = QWidget()
         chip_box = QVBoxLayout(self.chips)
@@ -118,52 +136,60 @@ class AskBubble(QWidget):
         cb.addWidget(self.confirm_text, 1)
         no = QPushButton("No")
         no.clicked.connect(lambda: self._answer_confirm(False))
-        yes = _primary("Yes, go ahead")
+        yes = _primary("Yes")
         yes.clicked.connect(lambda: self._answer_confirm(True))
         cb.addWidget(no)
         cb.addWidget(yes)
         self.confirm_bar.hide()
         outer.addWidget(self.confirm_bar)
 
+        ask = QHBoxLayout()
+        ask.setSpacing(4)
+        self.mic_btn = QToolButton()
+        self.mic_btn.setObjectName("aupediaMic")
+        self.mic_btn.setIcon(icons.icon("mic"))
+        self.mic_btn.setCheckable(True)
+        self.mic_btn.setCursor(Qt.PointingHandCursor)
+        self.mic_btn.setToolTip("Talk to me (Ctrl+Shift+Space): I listen, and your words appear as you speak")
+        self.mic_btn.clicked.connect(lambda: self.listen_toggled.emit())
+        ask.addWidget(self.mic_btn)
+        self.input = QLineEdit()
+        self.input.setObjectName("aupediaInput")
+        self.input.setPlaceholderText(self.PLACEHOLDER)
+        self.input.returnPressed.connect(lambda: self._ask(self.input.text()))
+        self.input.textEdited.connect(self._typed)
+        ask.addWidget(self.input, 1)
+        self.send_btn = QToolButton()
+        self.send_btn.setObjectName("aupediaSend")
+        self.send_btn.setIcon(icons.icon("send"))
+        self.send_btn.setCursor(Qt.PointingHandCursor)
+        self.send_btn.setToolTip("Send (Enter)")
+        self.send_btn.clicked.connect(self._send_or_stop)
+        ask.addWidget(self.send_btn)
+        outer.addLayout(ask)
+
         modes = QHBoxLayout()
-        modes.setSpacing(4)
+        modes.setSpacing(3)
         self.mode_group = QButtonGroup(self)
         self.show_btn = QPushButton("Show me")
         self.do_btn = QPushButton("Do it for me")
         for btn, tip in ((self.show_btn, "I point at things and tell you the steps"),
-                         (self.do_btn, "I click the buttons for you")):
+                         (self.do_btn, "I click, mark up, write and draw for you")):
             btn.setCheckable(True)
             btn.setObjectName("aupediaMode")
+            btn.setCursor(Qt.PointingHandCursor)
             btn.setToolTip(tip)
             self.mode_group.addButton(btn)
             modes.addWidget(btn)
         self.do_btn.setChecked(True)
         modes.addStretch()
         outer.addLayout(modes)
-
-        ask = QHBoxLayout()
-        self.mic_btn = QToolButton()
-        self.mic_btn.setObjectName("aupediaMic")
-        self.mic_btn.setIcon(icons.icon("mic"))
-        self.mic_btn.setCheckable(True)
-        self.mic_btn.setToolTip("Talk to me (Ctrl+Shift+Space): I listen, and your words appear as you speak")
-        self.mic_btn.clicked.connect(lambda: self.listen_toggled.emit())
-        ask.addWidget(self.mic_btn)
-        self.input = QLineEdit()
-        self.input.setPlaceholderText(self.PLACEHOLDER)
-        self.input.returnPressed.connect(lambda: self._ask(self.input.text()))
-        self.input.textEdited.connect(self._typed)
-        ask.addWidget(self.input, 1)
-        self.send_btn = QToolButton()
-        self.send_btn.setIcon(icons.icon("send"))
-        self.send_btn.setToolTip("Send (Enter)")
-        self.send_btn.clicked.connect(self._send_or_stop)
-        ask.addWidget(self.send_btn)
-        outer.addLayout(ask)
+        self.input.setToolTip("Enter to send, Esc to close")
 
         self.type_timer = QTimer(self)
         self.type_timer.setInterval(16)
         self.type_timer.timeout.connect(self._type_step)
+        QApplication.instance().focusChanged.connect(self._focus_changed)
         self._greet()
 
     # ---- conversation
@@ -171,14 +197,14 @@ class AskBubble(QWidget):
         return "do" if self.do_btn.isChecked() else "show"
 
     def set_status(self, text):
-        self.status.setText(text)
+        self.status.setToolTip(text)
+        self.status.setText(self.status.fontMetrics().elidedText(text, Qt.ElideRight, 150))
 
     def _greet(self):
         self._log = []
         self.view.clear()
         self.chips.show()
-        self.say("Hi! I'm **AUPedia**. Ask me how to do anything here, or tell me what you want done and "
-                 "I'll do it for you.")
+        self.say("Hi! I'm **AUPedea**. Ask me anything, or tell me what to do.", instant=True)
 
     def reset(self):
         self._queue.clear()
@@ -201,7 +227,7 @@ class AskBubble(QWidget):
         self.chips.hide()
         self._flush_typing()
         mark = "\U0001F3A4 " if spoken else ""
-        self._log.append(f'<p align="right" style="color:{theme.TEXT_MUTED}; margin:8px 0 2px 40px">'
+        self._log.append(f'<p align="right" style="color:{theme.TEXT_MUTED}; margin:6px 0 2px 36px">'
                          f'{mark}{rich(text)}</p>')
         self._render()
 
@@ -214,7 +240,7 @@ class AskBubble(QWidget):
         self.mic_btn.style().unpolish(self.mic_btn)
         self.mic_btn.style().polish(self.mic_btn)
         self.input.setPlaceholderText({"loading": detail or "Getting my ears ready...",
-                                       "listening": "Listening... just talk to me",
+                                       "listening": "Listening... just talk",
                                        "paused": "Paused while you're in another app"}.get(status, self.PLACEHOLDER))
         if not on:
             self.show_partial("")
@@ -248,8 +274,13 @@ class AskBubble(QWidget):
         self.send_btn.setIcon(icons.icon("stop" if busy else "send"))
         self.send_btn.setToolTip("Stop" if busy else "Send (Enter)")
 
-    def say(self, text):
-        """AUPedia's words: typed out a few characters a frame."""
+    def say(self, text, instant=False):
+        """AUPedea's words: typed out a few characters a frame (or straight in, when it's tucked away)."""
+        if instant:
+            self._flush_typing()
+            self._log.append(self._para(rich(text)))
+            self._render()
+            return
         self._queue.append((rich(text), text))
         if self._typing is None:
             self._next()
@@ -292,13 +323,29 @@ class AskBubble(QWidget):
         self.talking.emit(0.0)
 
     def _para(self, html_text):
-        return f'<p style="margin:6px 0">{html_text}</p>'
+        return f'<p style="margin:4px 0">{html_text}</p>'
 
     def _render(self, partial=None):
         body = "".join(self._log) + (self._para(partial + "▏") if partial is not None else "")
-        self.view.setHtml(f'<div style="color:{theme.TEXT}; font-size:10.5pt">{body}</div>')
+        self.view.setHtml(f'<div style="color:{theme.TEXT}; font-size:9.5pt">{body}</div>')
+        self._fit()
         bar = self.view.verticalScrollBar()
         bar.setValue(bar.maximum())
+
+    def _fit(self):
+        """Grow (or shrink) with the conversation, keeping the bottom (and the tail) where it is."""
+        doc = self.view.document()
+        doc.setTextWidth(self.WIDTH - 24 - 14)          # the text's width inside the card (no scroll bar)
+        need = doc.size().height() + 8
+        want = int(min(self.LOG_MAX, max(self.LOG_MIN, need)))
+        self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded if need > self.LOG_MAX else Qt.ScrollBarAlwaysOff)
+        if want == self.view.height():
+            return
+        bottom = self.geometry().bottom()
+        self.view.setFixedHeight(want)
+        self.adjustSize()
+        if self.isVisible():
+            self.move(self.x(), bottom - self.height() + 1)
 
     def is_typing(self):
         return self._typing is not None or bool(self._queue)
@@ -308,9 +355,14 @@ class AskBubble(QWidget):
         self._confirm_cb = callback
         self.confirm_text.setText(text)
         self.confirm_bar.show()
+        self.adjustSize()
+
+    def waiting_for_answer(self):
+        return self._confirm_cb is not None
 
     def _answer_confirm(self, yes):
         self.confirm_bar.hide()
+        self.adjustSize()
         cb, self._confirm_cb = self._confirm_cb, None
         if cb:
             cb(yes)
@@ -319,7 +371,90 @@ class AskBubble(QWidget):
         if self._confirm_cb is not None:
             self._answer_confirm(False)
 
-    # ---- the card
+    # ---- appearing, fading, and being moved
+    def appear(self, pos):
+        """Fade and float in at `pos`."""
+        self.adjustSize()
+        self._stop_anim()
+        start = QPoint(pos.x(), pos.y() + 10)
+        self.move(start)
+        self.setWindowOpacity(0.0)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self._animate([(b"pos", start, pos), (b"windowOpacity", 0.0, self._resting())], 180)
+
+    def vanish(self):
+        """Fade and float out, then hide."""
+        if not self.isVisible():
+            return
+        self._stop_anim()
+        here = self.pos()
+        group = self._animate([(b"pos", here, QPoint(here.x(), here.y() + 8)),
+                               (b"windowOpacity", self.windowOpacity(), 0.0)], 140)
+        group.finished.connect(self.hide)
+
+    def _animate(self, props, ms):
+        group = QParallelAnimationGroup(self)
+        for name, a, b in props:
+            prop = QPropertyAnimation(self, name, group)
+            prop.setDuration(anim.ms(ms / 1000) or 1)
+            prop.setStartValue(a)
+            prop.setEndValue(b)
+            prop.setEasingCurve(QEasingCurve.OutCubic)
+            group.addAnimation(prop)
+        self._anim = group
+        group.start()
+        return group
+
+    def _stop_anim(self):
+        if self._anim is not None:
+            self._anim.stop()
+            self._anim = None
+
+    def _resting(self):
+        return self.ACTIVE if self._hover or self._has_focus() else self.REST
+
+    def _has_focus(self):
+        w = QApplication.focusWidget()
+        return w is not None and (w is self or self.isAncestorOf(w))
+
+    def _settle(self):
+        if self.isVisible() and (self._anim is None or self._anim.state() != QParallelAnimationGroup.Running):
+            prop = QPropertyAnimation(self, b"windowOpacity", self)
+            prop.setDuration(anim.ms(0.15) or 1)
+            prop.setEndValue(self._resting())
+            prop.start(QPropertyAnimation.DeleteWhenStopped)
+
+    def _focus_changed(self, _old, _new):
+        self._settle()
+
+    def enterEvent(self, event):
+        self._hover = True
+        self._settle()
+
+    def leaveEvent(self, event):
+        self._hover = False
+        self._settle()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and event.position().y() < self.HEAD:
+            self._drag = event.globalPosition().toPoint() - self.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+
+    def mouseMoveEvent(self, event):
+        if self._drag is not None:
+            self.move(event.globalPosition().toPoint() - self._drag)
+            self.moved_by_hand = True
+        elif event.position().y() < self.HEAD:
+            self.setCursor(Qt.OpenHandCursor)
+        else:
+            self.unsetCursor()
+
+    def mouseReleaseEvent(self, event):
+        self._drag = None
+        self.unsetCursor()
+
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
             self.closed.emit()
@@ -332,17 +467,24 @@ class AskBubble(QWidget):
         self.input.setFocus()
 
     def _restyle(self):
-        """Chips and the mode switch, in the current theme's colours (light or dark)."""
+        """Chips, the mode switch and the buttons, in the current theme's colours (light or dark)."""
         self.setStyleSheet(f"""
             QLabel#aupediaTitle {{ color: {theme.TEXT}; }}
+            QLabel#aupediaStatus, QLabel#aupediaHint {{ color: {theme.TEXT_MUTED}; font-size: 8pt; }}
+            QToolButton#aupediaHeadButton {{ border-radius: 9px; padding: 3px; }}
+            QToolButton#aupediaHeadButton:hover {{ background: {theme.ACCENT_SOFT}; }}
             QPushButton#aupediaChip {{ background: {theme.ACCENT_SOFT}; border: 1px solid {theme.ACCENT_SOFT_BORDER};
-                color: {theme.TEXT}; border-radius: 12px; padding: 4px 10px; text-align: left; }}
-            QPushButton#aupediaChip:hover {{ border-color: {theme.ACCENT}; }}
+                color: {theme.TEXT}; border-radius: 10px; padding: 3px 8px; font-size: 8.5pt; text-align: left; }}
+            QPushButton#aupediaChip:hover {{ border-color: {theme.ACCENT}; background: {theme.SURFACE}; }}
+            QPushButton#aupediaChip:pressed {{ background: {theme.ACCENT}; color: #ffffff; }}
             QPushButton#aupediaMode {{ background: transparent; border: 1px solid {theme.BORDER_STRONG};
-                color: {theme.TEXT_MUTED}; border-radius: 12px; padding: 3px 12px; }}
+                color: {theme.TEXT_MUTED}; border-radius: 9px; padding: 1px 9px; font-size: 8.5pt; }}
+            QPushButton#aupediaMode:hover {{ border-color: {theme.ACCENT}; }}
             QPushButton#aupediaMode:checked {{ background: {theme.ACCENT}; border-color: {theme.ACCENT};
                 color: #ffffff; }}
-            QToolButton#aupediaMic {{ border-radius: 14px; padding: 4px; }}
+            QLineEdit#aupediaInput {{ border-radius: 14px; padding: 4px 10px; }}
+            QToolButton#aupediaMic, QToolButton#aupediaSend {{ border-radius: 14px; padding: 5px; }}
+            QToolButton#aupediaMic:hover, QToolButton#aupediaSend:hover {{ background: {theme.ACCENT_SOFT}; }}
             QToolButton#aupediaMic:checked {{ background: {theme.ACCENT_SOFT}; border: 1px solid {theme.ACCENT}; }}
             QToolButton#aupediaMic[live="true"] {{ background: #ffe1e6; border: 1px solid #e11d48; }}
         """)
@@ -351,50 +493,194 @@ class AskBubble(QWidget):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        r = QRectF(self.rect()).adjusted(6, 6, -6, -6 - self.TAIL)
-        path = QPainterPath()
-        path.addRoundedRect(r, 18, 18)
-        tail = QPainterPath()
-        tx = r.right() - 46 if self.tail_side == "right" else r.left() + 46
-        tip = QPointF(tx + (22 if self.tail_side == "right" else -22), r.bottom() + self.TAIL)
-        tail.moveTo(tx - 14, r.bottom() - 2)
-        tail.quadTo(QPointF(tx + 2, r.bottom() + 8), tip)
-        tail.quadTo(QPointF(tx + 6, r.bottom() + 4), QPointF(tx + 12, r.bottom() - 2))
-        tail.closeSubpath()
-        path = path.united(tail)
-        # soft shadow, paper, then two passes of a slightly shaky pen round the edge
-        for k, a in ((5, 14), (3, 20), (1, 26)):
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(0, 0, 0, a))
-            p.drawPath(path.translated(0, k))
-        paper = QColor(theme.SURFACE)
-        p.setBrush(paper)
-        p.drawPath(path)
-        ink = QColor(theme.TEXT)
-        p.setBrush(Qt.NoBrush)
-        for k, (dx, dy, alpha, width) in enumerate(((0, 0, 230, 2.0), (0.8, -0.6, 90, 1.2))):
-            c = QColor(ink)
-            c.setAlpha(alpha)
-            p.setPen(QPen(c, width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            p.drawPath(path.translated(dx, dy))
+        path = _card_path(QRectF(self.rect()).adjusted(5, 5, -5, -5 - self.TAIL), self.tail_side, self.TAIL, 15)
+        _paint_card(p, path, 236)
+        p.end()
+
+
+def _card_path(r, side, tail, radius):
+    """A rounded card with a speech tail at the bottom, towards `side` (where the scribble is)."""
+    path = QPainterPath()
+    path.addRoundedRect(r, radius, radius)
+    t = QPainterPath()
+    tx = r.right() - 40 if side == "right" else r.left() + 40
+    tip = QPointF(tx + (18 if side == "right" else -18), r.bottom() + tail)
+    t.moveTo(tx - 11, r.bottom() - 2)
+    t.quadTo(QPointF(tx + 2, r.bottom() + 6), tip)
+    t.quadTo(QPointF(tx + 5, r.bottom() + 3), QPointF(tx + 10, r.bottom() - 2))
+    t.closeSubpath()
+    return path.united(t)
+
+
+def _paint_card(p, path, alpha):
+    """Soft shadow, see-through paper, and a slightly shaky pen line round the edge."""
+    for k, a in ((4, 12), (2, 18)):
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(0, 0, 0, a))
+        p.drawPath(path.translated(0, k))
+    paper = QColor(theme.SURFACE)
+    paper.setAlpha(alpha)
+    p.setBrush(paper)
+    p.drawPath(path)
+    p.setBrush(Qt.NoBrush)
+    for dx, dy, a, width in ((0, 0, 210, 1.7), (0.8, -0.6, 80, 1.0)):
+        c = QColor(theme.TEXT)
+        c.setAlpha(a)
+        p.setPen(QPen(c, width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.drawPath(path.translated(dx, dy))
+
+
+class MiniBubble(QWidget):
+    """A little speech bubble over the scribble's head: what it hears, what it's doing, short
+    replies, and "Shall I...?". It follows the scribble around; click it to open the chat."""
+    clicked = Signal()
+    talking = Signal(float)
+    MAXW = 250
+    TAIL = 10
+    MAX_CHARS = 220
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("Click to open the chat")
+        self.doc = QTextDocument()
+        self.doc.setDocumentMargin(0)
+        self.text = ""                # what it says right now (plain), for tests and screen readers
+        self.kind = None              # say, heard, status, ask
+        self._full = ""
+        self._typed_at = None
+        self.anchor = (0.0, 0.0)
+        self._fade = QGraphicsOpacityEffect(self)
+        self._fade.setOpacity(0.0)
+        self.setGraphicsEffect(self._fade)
+        self._fade_anim = QPropertyAnimation(self._fade, b"opacity", self)
+        self._fade_anim.finished.connect(self._faded)
+        self._type = QTimer(self)
+        self._type.setInterval(16)
+        self._type.timeout.connect(self._type_step)
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(self.clear)
+        self.hide()
+
+    def say(self, text, kind="say"):
+        """say: typed out, mouth moving, then fades after a read; heard: live words; status: until
+        replaced; ask: a question, until answered."""
+        text = " ".join(str(text).split())
+        if len(text) > self.MAX_CHARS:
+            text = text[: self.MAX_CHARS].rsplit(" ", 1)[0] + "… (click for more)"
+        self.kind, self._full = kind, text
+        self._hide_timer.stop()
+        if kind == "say":
+            self._typed_at = anim.now()
+            self._type.start()
+            self._set(text, 1)
+        else:
+            self._type.stop()
+            self._set(text, len(text))
+            if kind == "heard":
+                self._hide_timer.start(anim.ms(4.0))
+        self._fade_to(1.0)
+
+    def clear(self, kind=None):
+        if kind is not None and self.kind != kind:
+            return
+        self._type.stop()
+        self.talking.emit(0.0)
+        self.kind = None
+        if self.isVisible():
+            self._fade_to(0.0)
+
+    def _set(self, text, shown):
+        self.text = text
+        part = text[:shown]
+        if part.count("**") % 2:
+            part += "**"
+        self.doc.setDefaultFont(self.font())
+        self.doc.setHtml(f'<div style="color:{theme.TEXT}; font-size:9pt">{rich(part)}</div>')
+        self.doc.setTextWidth(-1)
+        width = min(self.MAXW - 20, max(40.0, self.doc.idealWidth()))
+        self.doc.setTextWidth(width)
+        full = QTextDocument()
+        full.setDefaultFont(self.font())
+        full.setHtml(f'<div style="font-size:9pt">{rich(text)}</div>')
+        full.setTextWidth(-1)
+        w = int(min(self.MAXW, max(60, full.idealWidth() + 22)))
+        full.setTextWidth(w - 22)
+        self.doc.setTextWidth(w - 22)
+        self.resize(w, int(full.size().height()) + 16 + self.TAIL)
+        self.follow(*self.anchor)
+        self.update()
+
+    def _type_step(self):
+        n = (anim.now() - self._typed_at) * CHARS_PER_SECOND * 0.7
+        if n >= len(self._full):
+            self._type.stop()
+            self._set(self._full, len(self._full))
+            self.talking.emit(0.0)
+            self._hide_timer.start(anim.ms(min(12.0, 3.5 + len(self._full) / 22)))
+            return
+        self._set(self._full, int(n))
+        self.talking.emit(0.5 + 0.5 * abs(math.sin(n / 3.0)))
+
+    def _fade_to(self, opacity):
+        if opacity > 0:
+            self.show()
+            self.raise_()
+        self._fade_anim.stop()
+        self._fade_anim.setDuration(anim.ms(0.16) or 1)
+        self._fade_anim.setStartValue(self._fade.opacity())
+        self._fade_anim.setEndValue(opacity)
+        self._fade_anim.start()
+
+    def _faded(self):
+        if self._fade.opacity() <= 0.01:
+            self.hide()
+
+    def follow(self, x, y):
+        """Sit above the scribble at (x, y) (its head), inside the window."""
+        self.anchor = (x, y)
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        bx = x - self.width() + 46
+        by = y - self.height() - 2
+        bx = min(max(bx, 6), parent.width() - self.width() - 6)
+        if by < 6:                                   # no room above: hang below instead
+            by = y + 70
+        self.move(int(bx), int(by))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        side = "right" if self.anchor[0] >= self.x() + self.width() / 2 else "left"
+        r = QRectF(self.rect()).adjusted(3, 3, -3, -3 - self.TAIL)
+        _paint_card(p, _card_path(r, side, self.TAIL, 11), 238)
+        p.translate(r.left() + 8, r.top() + 5)
+        self.doc.drawContents(p)
         p.end()
 
 
 class AupediaSettingsDialog(QDialog):
-    """Which AI AUPedia thinks with (Claude or Hugging Face), its key and model, and whether it
+    """Which AI AUPedea thinks with (Claude or Hugging Face), its key and model, and whether it
     shows up on start."""
 
     SEES = "  \U0001F441"             # marks Hugging Face models that can see pictures of pages
 
     def __init__(self, show_on_start=True, parent=None, hf_fetch=None):
         super().__init__(parent)
-        self.setWindowTitle("AUPedia Settings")
+        self.setWindowTitle("AUPedea Settings")
         self.setMinimumWidth(560)
         self.hf_fetch = hf_fetch or brain.hf_models
         self.hf_vision = {mid: sees for mid, sees in brain.HF_MODELS}
         chosen = brain.choices()
         layout = _dialog_layout(self)
-        layout.addLayout(_header("AUPedia", "Without a key, AUPedia finds buttons and marks text up by itself. "
+        layout.addLayout(_header("AUPedea", "Without a key, AUPedea finds buttons and marks text up by itself. "
                                             "With an AI it answers anything, reads your pages, writes and draws on "
                                             "them, and does multi-step jobs. Use your own key from either service."))
 
@@ -463,13 +749,13 @@ class AupediaSettingsDialog(QDialog):
         layout.addWidget(self.hf_box)
 
         self.status = QLabel("Keys are stored encrypted for your Windows account. Questions, the list of menus "
-                             "and what's open (file names, page, tool) go to the service you choose; when AUPedia "
+                             "and what's open (file names, page, tool) go to the service you choose; when AUPedea "
                              "reads or marks up a page, that page's text (and a picture of it, for models that "
                              "can see) goes too. Each question uses a little of your account's credit.")
         self.status.setObjectName("muted")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
-        self.on_start = QCheckBox("Show AUPedia when the app starts")
+        self.on_start = QCheckBox("Show AUPedea when the app starts")
         self.on_start.setChecked(show_on_start)
         layout.addWidget(self.on_start)
         test = QPushButton("Test")
@@ -555,7 +841,7 @@ class AupediaSettingsDialog(QDialog):
             self.status.setText("Paste a key first.")
             return
         self.status.setText("Checking...")
-        worker.run(prov.check, lambda _r: self.status.setText("It works. AUPedia is ready to think."),
+        worker.run(prov.check, lambda _r: self.status.setText("It works. AUPedea is ready to think."),
                    lambda exc: self.status.setText(brain.friendly_error(exc, prov.kind)))
 
     def accept(self):

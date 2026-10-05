@@ -1,4 +1,4 @@
-"""AUPedia: a scribble that lives in the window. Click it, ask a question or
+"""AUPedea: a scribble that lives in the window. Click it, ask a question or
 say what you want done, and it shows you where things are (or does them for
 you), flying around the window on an ink trail.
 

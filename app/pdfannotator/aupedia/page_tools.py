@@ -1,4 +1,4 @@
-"""What AUPedia does to the paper itself: read a page (its words, where they
+"""What AUPedea does to the paper itself: read a page (its words, where they
 are, and a picture of it), and add annotations: pen strokes, shapes, text
 marked up or circled, and text written on the page. Each call is one undo
 step, made with the same functions the app's own tools use.
@@ -18,7 +18,7 @@ MAX_PAGE_TEXT = 9000          # characters of page text handed to the AI
 
 
 class PageError(Exception):
-    """A request AUPedia can't do on this page (said back to the AI or the person)."""
+    """A request AUPedea can't do on this page (said back to the AI or the person)."""
 
 
 def color(value, default="#2563eb"):

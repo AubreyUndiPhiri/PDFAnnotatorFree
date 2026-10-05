@@ -18,5 +18,5 @@ os.environ["AUPEDEAN_SIGN_DIR"] = tempfile.mkdtemp(prefix="aupedean-test-sign-")
 # ...and My Signatures
 os.environ["AUPEDEAN_SIGNATURES_DIR"] = tempfile.mkdtemp(prefix="aupedean-test-signatures-")
 
-# ...and AUPedia (its Claude key)
+# ...and AUPedea (its Claude key)
 os.environ["AUPEDEAN_AUPEDIA_DIR"] = tempfile.mkdtemp(prefix="aupedean-test-aupedia-")

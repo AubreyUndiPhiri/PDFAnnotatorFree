@@ -1,4 +1,4 @@
-"""Talking to AUPedia: the speech model (downloaded once, run locally),
+"""Talking to AUPedea: the speech model (downloaded once, run locally),
 the audio conversion, live words while you speak, and spoken questions,
 answers and "stop"s, all the way to a highlight on the page. Speech comes
 from Windows' own voice saying a sentence into a WAV file (no microphone).
@@ -145,7 +145,7 @@ def test_model_download_unpacks_and_is_ready(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# talking to AUPedia
+# talking to AUPedea
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -184,12 +184,12 @@ def test_say_it_and_it_happens(app, win, speech_dir, tmp_path, quiet_mic):
     a.toggle_listening()
     assert wait(app, lambda: a.listening() and a.listener.status == "listening", 20)
     assert a.bubble.mic_btn.isChecked() and a.mascot.listening and win.act_talk_aupedia.isChecked()
+    assert not a.chat_open()                                                  # listening doesn't pop the chat up
     heard = []
     a.listener.partial.connect(heard.append)
     for c in chunks(audio):
         a.listener.feed(c)
-    assert wait(app, lambda: a.bubble.input.text().startswith("highlight"), 10)   # live, in the box
-    assert a.bubble.input.font().italic()
+    assert wait(app, lambda: a.mini.text.startswith("🎤 highlight"), 10)   # live, over its head
     for c in chunks(SILENCE):
         a.listener.feed(c)
     page = win.current_tab().document.page(0)
@@ -217,7 +217,7 @@ def test_answering_and_stopping_out_loud(app, win):
     a.open_bubble()
     tabs = win.tabs.count()
     a.ask("close all tabs", "do")
-    assert wait(app, lambda: a.bubble.confirm_bar.isVisible())
+    assert wait(app, lambda: a.bubble.waiting_for_answer())
     a._heard("no please don't")                                               # "no" wins over "please"
     assert wait(app, lambda: done_talking(win) and "left it alone" in bubble_text(win))
     assert win.tabs.count() == tabs

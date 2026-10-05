@@ -66,7 +66,7 @@ class MainWindow(QMainWindow):
         self._build_aupedia()
 
     def _build_aupedia(self):
-        """AUPedia, the scribble helper: Help > Ask AUPedia (F1), or click it."""
+        """AUPedea, the scribble helper: Help > Ask AUPedea (F1), or click it."""
         from .aupedia.director import Aupedia
 
         self.aupedia = Aupedia(self, own_actions=[self.act_ask_aupedia, self.act_talk_aupedia, self.act_show_aupedia,
@@ -1275,13 +1275,13 @@ class MainWindow(QMainWindow):
 
     def _build_help_menu(self, menubar):
         m = menubar.addMenu("&Help")
-        self.act_ask_aupedia = self._add_menu_action(m, "Ask AUPedia...", lambda: self.aupedia.open_bubble(), "F1",
+        self.act_ask_aupedia = self._add_menu_action(m, "Ask AUPedea...", lambda: self.aupedia.open_bubble(), "F1",
                                                      icon="pen")
-        self.act_talk_aupedia = self._add_menu_action(m, "Talk to AUPedia", lambda _on: self.aupedia.toggle_listening(),
+        self.act_talk_aupedia = self._add_menu_action(m, "Talk to AUPedea", lambda _on: self.aupedia.toggle_listening(),
                                                       "Ctrl+Shift+Space", checkable=True, icon="mic")
-        self.act_show_aupedia = self._add_menu_action(m, "Show AUPedia", lambda on: self.aupedia.set_shown(on),
+        self.act_show_aupedia = self._add_menu_action(m, "Show AUPedea", lambda on: self.aupedia.set_shown(on),
                                                       checkable=True)
-        self.act_aupedia_settings = self._add_menu_action(m, "AUPedia Settings...",
+        self.act_aupedia_settings = self._add_menu_action(m, "AUPedea Settings...",
                                                           lambda: self.aupedia.show_settings(), icon="settings")
         m.addSeparator()
         self.act_about = self._add_menu_action(m, f"About {APP_TITLE}", self.show_about)

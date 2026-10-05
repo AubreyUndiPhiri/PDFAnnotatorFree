@@ -1,4 +1,4 @@
-"""AUPedia's thinking. It can think with Claude (Anthropic) or with a model
+"""AUPedea's thinking. It can think with Claude (Anthropic) or with a model
 on Hugging Face, using the person's own key and the model they choose; the
 same tools work with both: point_at and click (the app), read_page, draw,
 shape, mark_text and write_text (the paper), and go_to_page. Without a key, a
@@ -7,7 +7,7 @@ local finder matches the question's words to a command, and can mark text up.
 Keys are kept encrypted for this Windows user. Questions, the list of
 commands and what's open (file names, page, tool) are sent to the chosen
 service; a page's text (and, for models that can see, a picture of it) is
-sent only when AUPedia reads or marks up that page."""
+sent only when AUPedea reads or marks up that page."""
 import base64
 import json
 import os
@@ -139,7 +139,7 @@ def make_provider():
 # what the AI is told
 # ---------------------------------------------------------------------------
 
-PERSONA = """You are AUPedia, the helper who lives inside AUPedean Annotator, a Windows app for reading, \
+PERSONA = """You are AUPedea, the helper who lives inside AUPedean Annotator, a Windows app for reading, \
 annotating, signing and converting PDFs (it also writes Word and LaTeX documents). On screen you're a friendly \
 ink scribble with a pen-nib tail that flies around the window, and you can write and draw on the paper yourself.
 
@@ -460,7 +460,7 @@ def friendly_error(exc, kind=CLAUDE):
         except (ValueError, AttributeError):
             pass
         if exc.status == 401:
-            return "Hugging Face didn't accept the token. Check it in AUPedia Settings (the gear)."
+            return "Hugging Face didn't accept the token. Check it in AUPedea Settings (the gear)."
         if exc.status == 402:
             return "The Hugging Face account behind this token is out of credit for this month."
         if exc.status == 403:
@@ -469,14 +469,14 @@ def friendly_error(exc, kind=CLAUDE):
         if exc.status == 429:
             return "Hugging Face is getting a lot of questions from this token. Try again in a minute."
         if exc.status in (400, 404, 422) and detail and "tool" in str(detail).lower():
-            return "That Hugging Face model can't use tools. Pick another model in AUPedia Settings."
+            return "That Hugging Face model can't use tools. Pick another model in AUPedea Settings."
         return f"Hugging Face said: {detail}"
     try:
         import anthropic
     except ImportError:
-        return "AUPedia's Claude part isn't installed in this copy of the app."
+        return "AUPedea's Claude part isn't installed in this copy of the app."
     if isinstance(exc, anthropic.AuthenticationError):
-        return "Claude didn't accept the API key. Check it in AUPedia Settings (the gear)."
+        return "Claude didn't accept the API key. Check it in AUPedea Settings (the gear)."
     if isinstance(exc, anthropic.PermissionDeniedError):
         return "That API key isn't allowed to use this Claude model. Check the key in the Claude Console."
     if isinstance(exc, anthropic.RateLimitError):

@@ -1,4 +1,4 @@
-"""Puts AUPedia in the window and plays out what it decides: fly to a
+"""Puts AUPedea in the window and plays out what it decides: fly to a
 command, circle it and write a note beside it, open its menu, or tap it.
 
 A question goes to Claude when there's a key (each tool call it makes is
@@ -21,7 +21,7 @@ from ..cloud import worker
 from . import anim, brain, listen, page_tools
 from .catalog import Catalog
 from .mascot import REACH, Animator, HitArea, InkLayer, Mascot
-from .panel import AskBubble, AupediaSettingsDialog
+from .panel import AskBubble, AupediaSettingsDialog, MiniBubble
 
 RISKY = re.compile(r"\b(delete|remove|exit|quit|close|clear|discard|sign out|cancel|melt|overwrite|revert)\b", re.I)
 MARGIN = 70            # keep the scribble this far inside the window
@@ -46,7 +46,11 @@ class Aupedia(QObject):
         self.hit.moved.connect(self._dragged)
         self.hit.released.connect(self._released)
         self.hit.hovered.connect(self._hovered)
+        self.mini = MiniBubble(window)      # a little speech bubble over its head, for when the chat's tucked away
+        self.mini.clicked.connect(self.open_bubble)
+        self.mini.talking.connect(self._talk)
         self.animator = Animator(self.mascot, self.ink, self.hit, self)
+        self.animator.followers.append(self._follow_mini)
         self.bubble = None
         self.provider = None       # the AI service (Claude or Hugging Face); False: none, use the finder
         self.history = []          # the conversation, kept between questions
@@ -104,6 +108,11 @@ class Aupedia(QObject):
         self.ink.raise_()
         self.mascot.raise_()
         self.hit.raise_()
+        self.mini.raise_()
+
+    def _follow_mini(self, mascot):
+        if self.mini.isVisible():
+            self.mini.follow(mascot.pos_f[0], mascot.pos_f[1] + mascot._bob() - 34)
 
     def is_shown(self):
         return self.mascot.isVisible()
@@ -124,6 +133,7 @@ class Aupedia(QObject):
         else:
             self.stop()
             self.stop_listening()
+            self.mini.clear()
             if self.bubble is not None:
                 self.bubble.hide()
 
@@ -203,17 +213,23 @@ class Aupedia(QObject):
             self.set_shown(True)
         b = self.bubble or self._make_bubble()
         self._update_status()
-        self._place_bubble()
-        b.show()
-        b.raise_()
-        b.activateWindow()
+        self.mini.clear()
+        if b.isVisible():
+            b.raise_()
+            b.activateWindow()
+            return
+        b.moved_by_hand = False
+        b.appear(self._bubble_pos())
         self.mascot.mood = "happy"
         self.mascot.twirl()
         QTimer.singleShot(anim.ms(0.9), lambda: self._idle_if("happy"))
 
     def close_bubble(self):
         if self.bubble is not None:
-            self.bubble.hide()
+            self.bubble.vanish()
+
+    def chat_open(self):
+        return self.bubble is not None and self.bubble.isVisible()
 
     def toggle_bubble(self):
         if self.bubble is not None and self.bubble.isVisible():
@@ -227,8 +243,15 @@ class Aupedia(QObject):
 
     def _place_bubble(self):
         b = self.bubble
-        if b is None:
+        if b is None or not b.isVisible() or b.moved_by_hand:
             return
+        b.move(self._bubble_pos())
+        b.update()
+
+    def _bubble_pos(self):
+        """Where the chat sits: above and to the left of the scribble, its tail pointing at it, on screen."""
+        b = self.bubble
+        b.adjustSize()
         tip = self.window.mapToGlobal(QPoint(int(self.mascot.pos_f[0] - 30), int(self.mascot.pos_f[1] - 40)))
         x, y = tip.x() - b.width() + 40, tip.y() - b.height() + 10
         screen = (self.window.screen() or QApplication.primaryScreen()).availableGeometry()
@@ -238,8 +261,7 @@ class Aupedia(QObject):
             b.tail_side = "left"
         x = min(max(x, screen.left() + 8), screen.right() - b.width() - 8)
         y = min(max(y, screen.top() + 8), screen.bottom() - b.height() - 8)
-        b.move(x, y)
-        b.update()
+        return QPoint(x, y)
 
     def _update_status(self):
         if self.bubble is not None:
@@ -291,6 +313,9 @@ class Aupedia(QObject):
         b = self.bubble or self._make_bubble()
         b.chips.hide()
         b.set_busy(True)
+        if b.isVisible():
+            b.vanish()                      # out of the way while it works: click it to see the chat
+        self.mini.say(random.choice(["On it!", "Let me see...", "Okay!", "Leave it with me."]), "status")
         self.catalog = Catalog(self.window, exclude=self.own_actions)
         self._raise()
         prov = self._provider()
@@ -318,7 +343,7 @@ class Aupedia(QObject):
             self.bubble.cancel_confirm()
             if self.bubble.busy:
                 self.bubble.set_busy(False)
-                self.bubble.say("OK, stopped.")
+                self._say("OK, stopped.")
         self._home_timer.start(anim.ms(1.0))
 
     def _finish(self, gen, happy=True):
@@ -326,6 +351,7 @@ class Aupedia(QObject):
             return
         if self.bubble is not None:
             self.bubble.set_busy(False)
+        self.mini.clear("status")
         if happy:
             self.mascot.mood = "happy"
             self.mascot.twirl()
@@ -340,9 +366,17 @@ class Aupedia(QObject):
             QTimer.singleShot(anim.ms(0.5), lambda: self._ask_spoken(text))
 
     def _say(self, text):
-        if self.bubble is not None and text.strip():
-            self.mascot.mood = "talking"
-            self.bubble.say(text)
+        """AUPedea speaks: in the chat when it's open, else in the little bubble over its head
+        (and into the chat's history either way)."""
+        if not text.strip():
+            return
+        b = self.bubble or self._make_bubble()
+        self.mascot.mood = "talking"
+        if b.isVisible():
+            b.say(text)
+        else:
+            b.say(text, instant=True)
+            self.mini.say(text)
 
     # ---- with an AI service: ask, play out the tools it calls, send back what happened, repeat
     def _request(self, gen, prov, system, working, mode, rounds):
@@ -515,8 +549,6 @@ class Aupedia(QObject):
         if not self.is_shown():
             self.set_shown(True)
         b = self.bubble or self._make_bubble()
-        if not b.isVisible():
-            self.open_bubble()
         if self.listener is None:
             self.listener = listen.Listener(self)
             self.listener.partial.connect(self._heard_partial)
@@ -531,10 +563,11 @@ class Aupedia(QObject):
         self._say(f"To hear you I need a small speech model ({listen.MODEL_MB} MB, downloaded once). It "
                   "runs on this computer, so what you say never leaves it.")
         progress = _Progress(self)
-        progress.fraction.connect(lambda f: b.set_listening(
-            "loading", f"Fetching my ears... {int(f * 100)}% of {listen.MODEL_MB} MB"))
+        progress.fraction.connect(lambda f: (b.set_listening(
+            "loading", f"Fetching my ears... {int(f * 100)}% of {listen.MODEL_MB} MB"),
+            self.mini.say(f"Fetching my ears... {int(f * 100)}%", "status")))
         worker.run(lambda: listen.download_model(progress.fraction.emit),
-                   lambda _r: self.listener.start(), self._listen_failed)
+                   lambda _r: (self.mini.clear("status"), self.listener.start()), self._listen_failed)
 
     def stop_listening(self):
         if self.listener is not None:
@@ -573,12 +606,12 @@ class Aupedia(QObject):
                 self.bubble.set_listening("paused" if self.listener.paused else "listening")
 
     def _heard_partial(self, text):
-        if self.bubble is None:
+        if self.bubble is None or self.bubble.busy:
             return
-        if not self.bubble.busy:
+        if self.chat_open():
             self.bubble.show_partial(text)
-            if text and self.mascot.mood == "idle":
-                self.mascot.look_at = None
+        elif text and self.mini.kind != "ask":
+            self.mini.say("\U0001F3A4 " + text + "...", "heard")
 
     def _heard(self, text):
         """A whole sentence heard: answer a "Shall I?", stop, hold it for later, or ask it."""
@@ -589,7 +622,7 @@ class Aupedia(QObject):
             return
         words = set(text.lower().split())
         b = self.bubble or self._make_bubble()
-        if b.confirm_bar.isVisible():                 # "Shall I...?" answered out loud ("no" wins a tie)
+        if b.waiting_for_answer():                     # "Shall I...?" answered out loud ("no" wins a tie)
             for answer, said in ((False, words & NO), (True, words & YES)):
                 if said:
                     b.show_user(text, spoken=True)
@@ -601,15 +634,16 @@ class Aupedia(QObject):
                 self.stop()
             else:
                 self._pending_spoken = text                # asked as soon as this job is done
-                b.show_partial(text)
+                if self.chat_open():
+                    b.show_partial(text)
+                else:
+                    self.mini.say(f"\U0001F3A4 {text} (next, once I'm done)", "heard")
             return
         self._ask_spoken(text)
 
     def _ask_spoken(self, text):
         b = self.bubble or self._make_bubble()
-        if not b.isVisible():
-            self.open_bubble()
-        b.show_user(text, spoken=True)
+        b.show_user(text, spoken=True)          # into the chat's history; the chat itself stays tucked away
         self.ask(text, b.mode(), spoken=True)
 
     # ------------------------------------------------------------------
@@ -917,8 +951,16 @@ class Aupedia(QObject):
 
         if RISKY.search(cmd.label) and self.bubble is not None:
             self.mascot.mood = "puzzled"
-            self.bubble.confirm(f"Shall I press {cmd.where()}?",
-                                lambda yes: go() if yes else done("The person said no, so it wasn't clicked."))
+            question = f"Shall I press **{cmd.where()}**?"
+
+            def answered(yes):
+                self.mini.clear("ask")
+                go() if yes else done("The person said no, so it wasn't clicked.")
+
+            self.bubble.confirm(question.replace("**", ""), answered)
+            if not self.chat_open():
+                self.mini.say(question + (" Say yes or no, or click me." if self.listening() else " Click me to answer."),
+                              "ask")
         else:
             go()
 

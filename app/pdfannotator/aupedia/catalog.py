@@ -1,4 +1,4 @@
-"""Every command AUPedia can show or click: each menu item (with its path,
+"""Every command AUPedea can show or click: each menu item (with its path,
 like File > Convert to Word) and each toolbar button, read from the window
 as it is right now. Each gets a short stable id, like file/convert_to_word."""
 import os

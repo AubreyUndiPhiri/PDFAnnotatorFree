@@ -772,7 +772,7 @@ class HitArea(QWidget):
         self.setMask(QRegion(0, 0, d, d, QRegion.Ellipse))
         self.setAttribute(Qt.WA_NoSystemBackground)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip("AUPedia: click to ask, drag to move")
+        self.setToolTip("AUPedea: click to ask, drag to move")
 
     def follow(self, x, y):
         self.move(int(x - self.width() / 2), int(y - self.height() / 2))
@@ -805,6 +805,7 @@ class Animator(QObject):
     def __init__(self, mascot, ink, hit=None, parent=None):
         super().__init__(parent)
         self.mascot, self.ink, self.hit = mascot, ink, hit
+        self.followers = []           # called each frame with the mascot (things that move with it)
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.PreciseTimer)
         self.timer.timeout.connect(self.tick)
@@ -818,6 +819,8 @@ class Animator(QObject):
         self.mascot.step(t)
         if self.hit is not None:
             self.hit.follow(self.mascot.pos_f[0], self.mascot.pos_f[1] + self.mascot._bob())
+        for follow in self.followers:
+            follow(self.mascot)
         if tracing:                                          # the nib is on the paper: wet ink, no trail
             self.ink.wet_point(*self.mascot.nib_pos())       # (including where the stroke ends)
         elif self.mascot.flight is not None:

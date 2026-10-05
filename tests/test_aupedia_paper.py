@@ -1,4 +1,4 @@
-"""AUPedia on the paper: reading pages, marking text up, writing and drawing
+"""AUPedea on the paper: reading pages, marking text up, writing and drawing
 (each animated with the nib, then a real annotation that Undo removes), with
 Claude (over a mock HTTP transport), with Hugging Face (over a fake router),
 and offline; plus choosing the service and model in its settings.
@@ -218,7 +218,7 @@ def test_huggingface_reads_and_marks_up(app, win):
     ])
     a.provider = brain.HuggingFace("hf_test", "Qwen/Qwen3.6-35B-A3B", vision=True, transport=router)
     a.open_bubble()
-    assert "Hugging Face" in a.bubble.status.text() and "Qwen3.6" in a.bubble.status.text()
+    assert "Hugging Face" in a.bubble.status.toolTip() and "Qwen3.6" in a.bubble.status.toolTip()
     a.ask("highlight who the tenant is", "do")
     assert wait(app, lambda: done_talking(win) and "tenant's name" in bubble_text(win), 20)
     assert len(annots(win, "Highlight")) == 1
