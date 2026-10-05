@@ -325,13 +325,17 @@ class Aupedia(QObject):
         self._raise()
         prov = self._provider()
         if prov is not None:
-            if self.history_owner != (prov.kind, prov.model) or len(self.history) > brain.MAX_HISTORY:
+            lean = getattr(prov, "lean", False)       # a small model on this computer: each question starts afresh
+            if lean or self.history_owner != (prov.kind, prov.model) or len(self.history) > brain.MAX_HISTORY:
                 self.history = []          # a new service or model, or a long talk: start afresh
                 self.history_owner = (prov.kind, prov.model)
             working = list(self.history)
             prov.add_user(working, brain.user_turn(text, mode, self.catalog.state(), spoken))
-            if getattr(prov, "lean", False):
-                self.mini.say("Thinking on this computer...", "status")
+            if lean:
+                tight = prov.memory_tight()
+                self.mini.say("Thinking on this computer... memory's tight, so this will be slow: closing other "
+                              "apps helps, or pick a smaller model in my settings." if tight
+                              else "Thinking on this computer...", "status")
             self._request(gen, prov, brain.system_prompt(self.catalog, getattr(prov, "lean", False)), working, mode, 0)
         else:
             self._run_local(gen, brain.local_answer(self.catalog, text, mode))
@@ -402,6 +406,11 @@ class Aupedia(QObject):
             if reply.stop != "tool":
                 if reply.stop == "max_tokens":
                     self._say("(I ran out of room there. Ask me to carry on.)")
+                if getattr(prov, "thinks_anyway", False) and not getattr(self, "_told_thinking", False):
+                    self._told_thinking = True
+                    self._say(f"(Tip: {prov.model} thinks out loud before every answer, which is very slow on a "
+                              f"laptop. **{brain.OLLAMA_DEFAULT}** is the same size and answers straight away: "
+                              "download it in my settings.)")
                 self.history = working          # a complete turn: keep it for follow-ups
                 self._finish(gen)
                 return
@@ -743,7 +752,8 @@ class Aupedia(QObject):
         def arrived():
             if gen != self.gen:
                 return
-            text = page_tools.read_page(tab, index)
+            lean = getattr(self._provider(), "lean", False)
+            text = page_tools.read_page(tab, index, brain.OLLAMA_PAGE_TEXT if lean else None)
             prov = self._provider()
             image = page_tools.page_png(tab, index) if picture and prov is not None and prov.vision else None
             QTimer.singleShot(anim.ms(0.8), lambda: gen == self.gen and reply(text, image=image))

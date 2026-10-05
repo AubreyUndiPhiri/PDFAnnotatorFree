@@ -196,6 +196,7 @@ def test_settings_find_download_and_choose_a_local_model(app, tmp_path, monkeypa
         assert dlg.local_box.isVisibleTo(dlg) and not dlg.hf_box.isVisibleTo(dlg)
         assert wait(app, lambda: dlg.local_running is True)
         assert "Running, with 1 model" in dlg.ollama_state.text() and not dlg.install_btn.isVisibleTo(dlg)
+        dlg.local_model.setCurrentIndex(dlg.local_model.findData("qwen3:4b"))      # the one that's downloaded
         assert wait(app, lambda: dlg.local_vision.get("qwen3:4b") is True)
         assert dlg.local_model.itemText(0).startswith("✓ qwen3:4b")
         assert not dlg.pull_btn.isEnabled() and "see pictures" in dlg.local_note.text()
@@ -218,3 +219,97 @@ def test_settings_find_download_and_choose_a_local_model(app, tmp_path, monkeypa
         assert not dlg.pull_btn.isEnabled() and "Install Ollama" in dlg.local_note.text()
     finally:
         brain.save_choices(provider=brain.CLAUDE, local_model=brain.OLLAMA_DEFAULT, local_vision=False)
+
+
+# ---------------------------------------------------------------------------
+# keeping it light: a laptop's memory is the limit
+# ---------------------------------------------------------------------------
+
+def test_warming_up_asks_for_the_same_context_as_answering():
+    """A different context size makes Ollama load the whole model again: slow, and slower when memory's tight."""
+    fake = FakeOllama([said("Hi!")])
+    prov = brain.Ollama("qwen3:4b", transport=fake)
+    prov.warm_up()
+    prov.call("system", [{"role": "user", "content": "hi"}])
+    warm = next(c["body"] for c in fake.calls if c["path"] == "/api/generate")
+    assert warm["options"] == fake.chat_bodies()[0]["options"] and warm["options"]["num_ctx"] == brain.OLLAMA_CONTEXT
+
+
+def test_small_models_get_slim_tools():
+    full, lean = brain.TOOLS, brain.lean_tools()
+    assert [t["name"] for t in lean] == [t["name"] for t in full]
+    assert len(json.dumps(lean)) < len(json.dumps(full)) * 0.75
+    assert all("description" not in p for t in lean for p in t["parameters"]["properties"].values())
+    shape = next(t for t in lean if t["name"] == "shape")
+    assert shape["parameters"]["properties"]["kind"]["enum"] == ["rect", "ellipse", "line", "arrow"]   # rules kept
+
+
+def test_each_local_question_starts_afresh_and_reads_less(app, win, monkeypatch):
+    a = win.aupedia
+    monkeypatch.setattr(brain, "memory_gb", lambda: (16.0, 9.0))
+    fake = FakeOllama([said("", [("read_page", {"page": 1})]), said("It's about rent."), said("You're welcome!")])
+    a.provider = brain.Ollama("qwen3:4b", transport=fake)
+    a.open_bubble()
+    a.ask("what's this page about?", "show")
+    assert wait(app, lambda: done_talking(win) and "about rent" in bubble_text(win), 20)
+    a.ask("thanks", "show")
+    assert wait(app, lambda: done_talking(win) and "welcome" in bubble_text(win), 20)
+    last = fake.chat_bodies()[-1]["messages"]
+    assert [m["role"] for m in last] == ["system", "user"] and "thanks" in last[1]["content"]   # no old turns
+    tab = win.current_tab()
+    from pdfannotator.aupedia import page_tools
+    assert len(page_tools.read_page(tab, 0, limit=200)) < 400
+
+
+def test_warns_when_memory_is_too_tight(app, win, monkeypatch):
+    a = win.aupedia
+    monkeypatch.setattr(brain, "memory_gb", lambda: (8.0, 0.7))
+    a.provider = brain.Ollama("qwen3:4b", transport=FakeOllama([said("Done.")]))
+    a.open_bubble()
+    a.ask("hi", "show")
+    assert wait(app, lambda: "memory's tight" in a.mini.text, 5)
+
+
+def test_recommends_a_model_that_fits_this_computer():
+    assert brain.recommended_local_model(8.0) == "qwen3:1.7b"
+    assert brain.recommended_local_model(12.0) == "qwen3:4b-instruct"
+    assert brain.recommended_local_model(32.0) == "qwen3:8b"
+    total, free = brain.memory_gb()
+    assert total is None or total > free >= 0
+
+
+def test_settings_point_out_a_better_fit(app, monkeypatch):
+    from pdfannotator.aupedia.panel import AupediaSettingsDialog
+
+    monkeypatch.setattr(brain, "memory_gb", lambda: (8.0, 1.0))
+    try:
+        dlg = AupediaSettingsDialog(True, local_fetch=lambda: [("qwen3:4b", 2.5)], local_caps=lambda m: {"tools"})
+        dlg.use_local.setChecked(True)
+        assert wait(app, lambda: dlg.local_running is True)
+        dlg.local_model.setCurrentIndex(dlg.local_model.findData("qwen3:4b"))
+        assert "8 GB of memory: qwen3:1.7b will be much quicker here" in dlg.local_note.text()
+        dlg.local_model.setCurrentIndex(dlg.local_model.findData("qwen3:1.7b"))
+        assert "A good fit for this computer" in dlg.local_note.text()
+    finally:
+        brain.save_choices(provider=brain.CLAUDE, local_model=brain.OLLAMA_DEFAULT, local_vision=False)
+
+
+def test_reasoning_out_loud_is_kept_out_of_the_answer(app, win, monkeypatch):
+    """A "thinking" model (plain qwen3:4b) writes its reasoning first, ending in </think>, even when told not to."""
+    assert brain.strip_thinking("Okay, the user wants dark mode. Let me check...\n</think>\n\nIt's **View > Dark Mode**.") \
+        == ("It's **View > Dark Mode**.", True)
+    assert brain.strip_thinking("<think>still going") == ("", True)
+    assert brain.strip_thinking("Just the answer.") == ("Just the answer.", False)
+    monkeypatch.setattr(brain, "memory_gb", lambda: (16.0, 9.0))
+    a = win.aupedia
+    fake = FakeOllama([said("Okay, the user is asking where dark mode is. Let me look.\n</think>\n\nIt's under **View**."),
+                       said("Sure!")])
+    a.provider = brain.Ollama("qwen3:4b", transport=fake)
+    a.open_bubble()
+    a.ask("where is dark mode?", "show")
+    assert wait(app, lambda: done_talking(win) and "under View" in bubble_text(win), 20)
+    assert "Let me look" not in bubble_text(win)                               # its musings never reach the chat
+    assert "qwen3:4b-instruct" in bubble_text(win) and "Tip:" in bubble_text(win)   # and the cure, once
+    a.ask("thanks", "show")
+    assert wait(app, lambda: done_talking(win) and "Sure!" in bubble_text(win), 20)
+    assert bubble_text(win).count("Tip:") == 1

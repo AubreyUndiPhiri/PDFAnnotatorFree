@@ -54,8 +54,9 @@ def page_index(tab, page_number):
 # reading
 # ---------------------------------------------------------------------------
 
-def read_page(tab, index):
-    """The page's text, line by line, each with its box [x0, y0, x1, y1] in points."""
+def read_page(tab, index, limit=None):
+    """The page's text, line by line, each with its box [x0, y0, x1, y1] in points (up to `limit` characters)."""
+    limit = limit or MAX_PAGE_TEXT
     page = tab.document.page(index)
     r = page.rect
     lines = {}
@@ -72,7 +73,7 @@ def read_page(tab, index):
     used = len(out[0])
     for x0, y0, x1, y1, words in rows:
         line = f"[{x0:.0f},{y0:.0f},{x1:.0f},{y1:.0f}] {' '.join(words)}"
-        if used + len(line) > MAX_PAGE_TEXT:
+        if used + len(line) > limit:
             out.append(f"... ({len(rows)} lines in all; the rest is cut off)")
             break
         out.append(line)

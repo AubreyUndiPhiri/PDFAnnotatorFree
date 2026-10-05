@@ -927,6 +927,8 @@ class AupediaSettingsDialog(QDialog):
     def _local_changed(self, *_):
         name = self.local_model_id()
         about = dict(brain.OLLAMA_MODELS).get(name, "")
+        total, free = brain.memory_gb()
+        best = brain.recommended_local_model(total)
         if self.local_running is False:
             self.pull_btn.setEnabled(False)
             self.local_note.setText("Install Ollama (free, about 1 GB), start it, then click Check Again. "
@@ -937,9 +939,17 @@ class AupediaSettingsDialog(QDialog):
         self.pull_btn.setText("Downloaded" if installed else "Download")
         sees = self.local_vision.get(name)
         parts = [about] if about else []
+        need = brain.OLLAMA_NEEDS_GB.get(name)
+        if total and need and need > total * 0.4 and name != best:
+            parts.append(f"This computer has {total:.0f} GB of memory: {best} will be much quicker here.")
+        elif name == best and total:
+            parts.append(f"A good fit for this computer's {total:.0f} GB of memory.")
         parts.append("Ready to use." if installed else "Not downloaded yet: click Download (once).")
         if installed and sees is not None:
             parts.append("It can see pictures of your pages." if sees else "It reads your pages' text.")
+        if name == "qwen3:4b":
+            parts.append(f"Note: this one thinks out loud before every answer, which takes minutes on a laptop; "
+                         f"{brain.OLLAMA_DEFAULT} is the same size and answers straight away.")
         parts.append("Runs on this computer: nothing you ask leaves it. Slower than the online AIs, and best at "
                      "simpler jobs.")
         self.local_note.setText(" ".join(parts))

@@ -66,15 +66,17 @@ OLLAMA_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 if not OLLAMA_URL.startswith("http"):
     OLLAMA_URL = "http://" + OLLAMA_URL
 OLLAMA_DOWNLOAD_URL = "https://ollama.com/download/windows"
-OLLAMA_DEFAULT = "qwen3:4b"
-# small models that use tools and fit an ordinary laptop (name, what it's like)
+OLLAMA_DEFAULT = "qwen3:4b-instruct"
+# small models that use tools and fit an ordinary laptop (name, what it's like). Instruct models answer
+# straight away; "thinking" ones (plain qwen3:4b is one now) write pages of reasoning first: minutes on a laptop
 OLLAMA_MODELS = [
-    ("qwen3:4b", "Qwen3 4B: about 2.5 GB, the best of the small ones"),
+    ("qwen3:4b-instruct", "Qwen3 4B Instruct: about 2.5 GB, the best of the small ones, answers straight away"),
     ("llama3.2:3b", "Llama 3.2 3B: about 2 GB, a little quicker"),
     ("qwen3:1.7b", "Qwen3 1.7B: about 1.4 GB, quickest, simple jobs only"),
     ("qwen3:8b", "Qwen3 8B: about 5 GB, cleverer, needs 16 GB of memory"),
 ]
-OLLAMA_CONTEXT = 8192              # tokens the model keeps in mind (more is slower on a laptop)
+OLLAMA_CONTEXT = 4096              # tokens the model keeps in mind: each one costs memory a laptop may not have
+OLLAMA_PAGE_TEXT = 2500            # characters of a page handed to a model on this computer
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +271,51 @@ TOOLS = [
 PAPER_TOOLS = {"mark_text", "write_text", "draw", "shape"}
 
 
+def lean_tools():
+    """The tools with one-line descriptions and no parameter notes (a small model reads every word, slowly)."""
+    out = []
+    for t in TOOLS:
+        params = {k: {kk: vv for kk, vv in v.items() if kk != "description"} for k, v in t["parameters"]["properties"].items()}
+        out.append({**t, "description": t["description"].split(". ")[0].rstrip(".") + ".",
+                    "parameters": {**t["parameters"], "properties": params}})
+    return out
+
+
+def memory_gb():
+    """(total, free) memory of this computer in GB, or (None, None) if Windows won't say."""
+    try:
+        import ctypes
+
+        class Status(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+        st = Status()
+        st.dwLength = ctypes.sizeof(Status)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+            return None, None
+        return st.ullTotalPhys / 1e9, st.ullAvailPhys / 1e9
+    except (AttributeError, OSError):
+        return None, None
+
+
+# what each suggested model needs in memory while it answers (the model plus 4K tokens of context, roughly)
+OLLAMA_NEEDS_GB = {"qwen3:1.7b": 2.0, "llama3.2:3b": 3.0, "qwen3:4b": 3.4, "qwen3:4b-instruct": 3.4, "qwen3:8b": 6.0}
+
+
+def recommended_local_model(total_gb=None):
+    """The best suggested model for this computer's memory."""
+    total = total_gb if total_gb is not None else memory_gb()[0]
+    if total is None or total >= 15:
+        return "qwen3:8b" if total else OLLAMA_DEFAULT
+    if total >= 11:
+        return "qwen3:4b-instruct"
+    return "qwen3:1.7b"
+
+
 def guide_text():
     for path in GUIDES:
         try:
@@ -278,6 +325,13 @@ def guide_text():
     return "(The guide isn't available.)"
 
 
+LEAN_PERSONA = """You are AUPedea, the friendly scribble helper inside AUPedean Annotator, a PDF app. Help the \
+person by using your tools: point_at shows a command, click presses it; read_page reads the open PDF (text with \
+line boxes in points, x right and y down from the top-left); mark_text, write_text, draw and shape change the page; \
+go_to_page turns pages. In "show me" mode only point and explain; in "do it" mode do the job. Use only command ids \
+from the list. Read a page before marking it. If a question was spoken (<input>spoken</input>), allow for \
+misheard words, and ask one short question if you're unsure. Reply in a sentence or two, warmly."""
+
 LEAN_NOTE = """Note: you're a small model running on this computer, so keep to what you can do well: one job at a \
 time, a few tool calls, short replies. Use only ids from the list below. There's no guide here: if asked how something works and you're not sure, point at the menu that has it rather than guessing."""
 
@@ -286,7 +340,7 @@ def system_prompt(catalog, lean=False):
     """Stable between questions (the command list and the guide), so it's cached. Lean (for a small model on
     this computer, where every token is read by a laptop's processor): a shorter command list and no guide."""
     if lean:
-        return PERSONA + "\n\n" + LEAN_NOTE + "\n\n# Commands (id: where it is)\n" + catalog.describe(compact=True)
+        return LEAN_PERSONA + "\n\n" + LEAN_NOTE + "\n\n# Commands (id: where it is)\n" + catalog.describe(compact=True)
     return (PERSONA + "\n\n# Commands (id: where it is [shortcut] - what it does)\n" + catalog.describe()
             + "\n\n# The guide\n" + guide_text())
 
@@ -489,6 +543,7 @@ class Ollama:
         self.transport = transport or http_request
         self._caps = None
         self._names = {}             # call id -> tool name (Ollama answers tool results by name)
+        self.thinks_anyway = False   # it reasoned out loud though told not to (a "thinking" model)
 
     def label(self):
         return self.model
@@ -517,16 +572,33 @@ class Ollama:
                 self._caps = set()
         return self._caps
 
+    def _options(self):
+        # warming up and answering must ask for the same context, or Ollama loads the whole model again
+        return {"num_ctx": OLLAMA_CONTEXT, "temperature": 0.3}
+
     def warm_up(self):
         """Load the model into memory now, so the first question doesn't wait for it."""
-        self._req("POST", "/api/generate", {"model": self.model, "keep_alive": "30m"}, timeout=300)
+        self._req("POST", "/api/generate", {"model": self.model, "keep_alive": "30m", "options": self._options()},
+                  timeout=300)
+
+    def memory_tight(self):
+        """True when this computer hasn't the free memory the model needs (so it'll crawl)."""
+        _total, free = memory_gb()
+        need = OLLAMA_NEEDS_GB.get(self.model)
+        return bool(free is not None and need and not self._loaded() and free < need)
+
+    def _loaded(self):
+        try:
+            return any(m.get("name") == self.model for m in self._req("GET", "/api/ps", timeout=3).get("models", []))
+        except (Offline, ApiError, ValueError):
+            return False
 
     def call(self, system, conversation):
         body = {"model": self.model, "stream": False, "keep_alive": "30m",
                 "messages": [{"role": "system", "content": system}] + conversation,
                 "tools": [{"type": "function", "function": {"name": t["name"], "description": t["description"],
-                                                            "parameters": t["parameters"]}} for t in TOOLS],
-                "options": {"num_ctx": OLLAMA_CONTEXT, "temperature": 0.3}}
+                                                            "parameters": t["parameters"]}} for t in lean_tools()],
+                "options": self._options()}
         if "thinking" in self.capabilities():
             body["think"] = False    # thinking out loud takes minutes on a laptop's processor
         try:
@@ -535,7 +607,8 @@ class Ollama:
             raise (OllamaSlow() if self.running() else OllamaNotRunning()) from None
         msg = data.get("message") or {}
         reply = Reply()
-        content = (msg.get("content") or "").strip()
+        content, thought = strip_thinking(msg.get("content") or "")
+        self.thinks_anyway = self.thinks_anyway or thought
         if content:
             reply.texts.append(content)
         calls = []
@@ -551,7 +624,7 @@ class Ollama:
             self._names[call_id] = fn.get("name", "")
             reply.calls.append((call_id, fn.get("name", ""), args if isinstance(args, dict) else {}))
             calls.append({"function": {"name": fn.get("name", ""), "arguments": args}})
-        reply.raw = {"role": "assistant", "content": msg.get("content") or ""}
+        reply.raw = {"role": "assistant", "content": content}      # its reasoning isn't worth reading again
         if calls:
             reply.raw["tool_calls"] = calls
         reply.stop = "tool" if reply.calls else ("max_tokens" if data.get("done_reason") == "length" else "end")
@@ -579,6 +652,16 @@ class Ollama:
         names = [n for n, _size in ollama_models(self.transport, self.url)]
         if self.model not in names and f"{self.model}:latest" not in names:
             raise ApiError(404, f"model '{self.model}' not found")
+
+
+def strip_thinking(text):
+    """(the answer, whether it reasoned out loud first): "<think>...</think>" (or a "thinking" model's
+    reasoning that only ends in "</think>") is taken off the front."""
+    if "</think>" in text:
+        return text.rsplit("</think>", 1)[1].strip(), True
+    if text.lstrip().startswith("<think>"):
+        return "", True                  # cut off while still thinking
+    return text.strip(), False
 
 
 def ollama_models(transport=None, url=None):

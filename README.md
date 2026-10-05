@@ -232,13 +232,20 @@ highlight, underline, strike out or circle words you name ("highlight
 - **On this computer** (offline, free, no key): install Ollama
   (ollama.com, **Get Ollama...** in the settings), pick a model and click
   **Download** (once). Nothing you ask leaves the computer. Small models
-  suit an ordinary laptop: Qwen3 4B (about 2.5 GB, recommended), Llama 3.2 3B
-  (about 2 GB) or Qwen3 1.7B (about 1.4 GB); Qwen3 8B needs about 16 GB of
-  memory. They're slower than the online AIs (the first answer after
-  starting takes longest, while the model loads and reads its instructions)
-  and best at simpler, one-step jobs; AUPedea gives them shorter
-  instructions (no guide) and switches their "thinking" off to keep them
-  quick.
+  suit an ordinary laptop: Qwen3 4B Instruct (`qwen3:4b-instruct`, about
+  2.5 GB), Llama 3.2 3B (about 2 GB) or Qwen3 1.7B (about 1.4 GB; the
+  settings suggest it on 8 GB computers); Qwen3 8B needs about 16 GB of
+  memory. Avoid plain `qwen3:4b`: it "thinks" out loud before every answer,
+  which takes minutes on a laptop. They're slower than the online AIs and
+  best at simpler, one-step jobs; AUPedea gives them short instructions
+  (no guide), a 4K context, and starts each question afresh to keep them
+  light.
+
+  **If it's slow, it's almost always memory.** The model must fit in free
+  memory (the settings show how much this computer has); when it doesn't,
+  Windows keeps swapping it to the disk and each word takes seconds. Close
+  big apps (VS Code, Java tools, Chrome, Slack) while using it, or pick a
+  smaller model. AUPedea warns you when memory's too tight.
 
 Keys are your own and stored encrypted for your Windows account; each
 question costs a little on that account. Questions, the list of menus, and
