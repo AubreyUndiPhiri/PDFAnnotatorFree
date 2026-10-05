@@ -13,3 +13,5 @@ matplotlib>=3.8
 cryptography>=42
 # AUPedia, the scribble helper: answers and clicks with Claude (the user's own API key)
 anthropic>=1.9
+# AUPedia: talk to it (speech recognised on this computer; its model downloads once)
+vosk>=0.3.45

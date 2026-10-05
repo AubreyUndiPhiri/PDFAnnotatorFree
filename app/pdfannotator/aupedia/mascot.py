@@ -108,6 +108,9 @@ class Mascot(QWidget):
         self.trick = None
         self.on_land = None
         self.pen = False              # holding the pen: the nib stays put relative to the body
+        self.listening = False        # the microphone is on: sound waves by its head
+        self.ear = 0.0                # how loud what it hears is (smoothed, 0..1)
+        self.ear_target = 0.0
         self.tracing = None           # following a path with the nib (drawing, writing)
 
     # ---- where it is
@@ -256,6 +259,7 @@ class Mascot(QWidget):
         else:
             self.vel = (self.vel[0] * 0.8, self.vel[1] * 0.8)
         self._steer_tail(dt)
+        self.ear += (self.ear_target - self.ear) * min(1.0, dt * (16 if self.ear_target > self.ear else 5))
         if t >= self.next_blink:
             self.blink_at = t
             self.next_blink = t + random.uniform(2.2, 5.5) * (0.5 if random.random() < 0.2 else 1)   # sometimes twice
@@ -368,7 +372,22 @@ class Mascot(QWidget):
         self._draw_face(p, ink, accent)
         if self.mood == "thinking":
             self._draw_thought(p, ink)
+        if self.listening:
+            self._draw_listening(p, accent)
         p.end()
+
+    def _draw_listening(self, p, accent):
+        """Ink sound waves beside its head, swelling with the voice it hears."""
+        p.setBrush(Qt.NoBrush)
+        for i in range(3):
+            pulse = 0.5 + 0.5 * math.sin(self.t * 5.5 - i * 0.9)
+            strength = max(0.18, self.ear) * (1 - i * 0.22) * (0.65 + 0.35 * pulse)
+            c = QColor(accent)
+            c.setAlphaF(min(1.0, 0.25 + strength))
+            p.setPen(QPen(c, 1.8, Qt.SolidLine, Qt.RoundCap))
+            r = 5 + i * 5 + self.ear * 4
+            box = QRectF(R - 2 - r, -6 - r, 2 * r, 2 * r)
+            p.drawArc(box, -50 * 16, 100 * 16)
 
     def _sway(self):
         return 0.0 if self.is_busy() or self.pen else 7 * math.sin(self.t * 3.1)
@@ -425,7 +444,7 @@ class Mascot(QWidget):
         if 0 <= bu < 1:
             blink = max(0.08, abs(1 - 2 * bu))
         happy = self.mood == "happy"
-        big = 1.18 if self.hover or self.mood == "puzzled" else 1.0
+        big = 1.18 if self.hover or self.mood == "puzzled" or (self.listening and self.ear > 0.2) else 1.0
         for side in (-1, 1):
             ex, ey = side * 8.2 + ox * 0.6, -4 + oy * 0.5
             p.setPen(Qt.NoPen)
@@ -805,7 +824,7 @@ class Animator(QObject):
             self.ink.add_trail_point(*self.mascot.nib_pos())
         self.ink.step(t)
         fast = (self.mascot.is_busy() or self.ink.busy() or self.mascot.mood != "idle" or self.mascot.hover
-                or self.mascot.pen)
+                or self.mascot.pen or self.mascot.listening)
         want = 16 if fast else 33
         if self.timer.interval() != want:
             self.timer.setInterval(want)

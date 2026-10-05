@@ -43,8 +43,10 @@ class AskBubble(QWidget):
     reset_requested = Signal()
     closed = Signal()
     talking = Signal(float)           # how open the mouth is while text types out
+    listen_toggled = Signal()
     WIDTH, HEIGHT = 380, 430
     TAIL = 18
+    PLACEHOLDER = "Ask me anything, or tell me what to do..."
 
     def __init__(self, parent=None):
         super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
@@ -58,6 +60,7 @@ class AskBubble(QWidget):
         self._typing = None           # [html, plain, shown]
         self._log = []                # finished HTML blocks
         self._confirm_cb = None
+        self._partial = None          # words heard so far, shown in the input box
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 14, 16, 14 + self.TAIL)
@@ -139,9 +142,17 @@ class AskBubble(QWidget):
         outer.addLayout(modes)
 
         ask = QHBoxLayout()
+        self.mic_btn = QToolButton()
+        self.mic_btn.setObjectName("aupediaMic")
+        self.mic_btn.setIcon(icons.icon("mic"))
+        self.mic_btn.setCheckable(True)
+        self.mic_btn.setToolTip("Talk to me (Ctrl+Shift+Space): I listen, and your words appear as you speak")
+        self.mic_btn.clicked.connect(lambda: self.listen_toggled.emit())
+        ask.addWidget(self.mic_btn)
         self.input = QLineEdit()
-        self.input.setPlaceholderText("Ask me anything, or tell me what to do...")
+        self.input.setPlaceholderText(self.PLACEHOLDER)
         self.input.returnPressed.connect(lambda: self._ask(self.input.text()))
+        self.input.textEdited.connect(self._typed)
         ask.addWidget(self.input, 1)
         self.send_btn = QToolButton()
         self.send_btn.setIcon(icons.icon("send"))
@@ -179,12 +190,52 @@ class AskBubble(QWidget):
         text = text.strip()
         if not text:
             return
+        self.show_user(text)
+        self.asked.emit(text, self.mode())
+
+    def show_user(self, text, spoken=False):
+        """The person's words in the conversation (spoken ones get a little microphone)."""
         self.input.clear()
+        self._partial = None
+        self._set_input_style(False)
         self.chips.hide()
         self._flush_typing()
-        self._log.append(f'<p align="right" style="color:{theme.TEXT_MUTED}; margin:8px 0 2px 40px">{rich(text)}</p>')
+        mark = "\U0001F3A4 " if spoken else ""
+        self._log.append(f'<p align="right" style="color:{theme.TEXT_MUTED}; margin:8px 0 2px 40px">'
+                         f'{mark}{rich(text)}</p>')
         self._render()
-        self.asked.emit(text, self.mode())
+
+    # ---- listening
+    def set_listening(self, status, detail=""):
+        """off, loading, listening or paused (detail: e.g. download progress)."""
+        on = status in ("loading", "listening", "paused")
+        self.mic_btn.setChecked(on)
+        self.mic_btn.setProperty("live", status == "listening")
+        self.mic_btn.style().unpolish(self.mic_btn)
+        self.mic_btn.style().polish(self.mic_btn)
+        self.input.setPlaceholderText({"loading": detail or "Getting my ears ready...",
+                                       "listening": "Listening... just talk to me",
+                                       "paused": "Paused while you're in another app"}.get(status, self.PLACEHOLDER))
+        if not on:
+            self.show_partial("")
+
+    def show_partial(self, text):
+        """Words heard so far, live in the box (never over something the person typed)."""
+        current = self.input.text()
+        if current and current != (self._partial or ""):
+            return
+        self._partial = text or None
+        self.input.setText(text)
+        self._set_input_style(bool(text))
+
+    def _typed(self, _text):
+        self._partial = None
+        self._set_input_style(False)
+
+    def _set_input_style(self, heard):
+        font = self.input.font()
+        font.setItalic(heard)
+        self.input.setFont(font)
 
     def _send_or_stop(self):
         if self.busy:
@@ -291,6 +342,9 @@ class AskBubble(QWidget):
                 color: {theme.TEXT_MUTED}; border-radius: 12px; padding: 3px 12px; }}
             QPushButton#aupediaMode:checked {{ background: {theme.ACCENT}; border-color: {theme.ACCENT};
                 color: #ffffff; }}
+            QToolButton#aupediaMic {{ border-radius: 14px; padding: 4px; }}
+            QToolButton#aupediaMic:checked {{ background: {theme.ACCENT_SOFT}; border: 1px solid {theme.ACCENT}; }}
+            QToolButton#aupediaMic[live="true"] {{ background: #ffe1e6; border: 1px solid #e11d48; }}
         """)
         self._render()
 

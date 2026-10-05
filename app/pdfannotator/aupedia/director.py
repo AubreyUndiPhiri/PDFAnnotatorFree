@@ -9,7 +9,7 @@ import random
 import re
 
 import pymupdf as fitz
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QTimer
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractButton, QApplication, QCheckBox, QComboBox, QDialog, QLabel, QLineEdit, QPlainTextEdit, QRadioButton,
@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 
 from .. import theme
 from ..cloud import worker
-from . import anim, brain, page_tools
+from . import anim, brain, listen, page_tools
 from .catalog import Catalog
 from .mascot import REACH, Animator, HitArea, InkLayer, Mascot
 from .panel import AskBubble, AupediaSettingsDialog
@@ -55,6 +55,9 @@ class Aupedia(QObject):
         self._reveal.setInterval(16)
         self._reveal.timeout.connect(self._reveal_step)
         self._reveal_text = None
+        self.listener = None           # the microphone (made the first time it's switched on)
+        self._pending_spoken = None    # said while it was busy: asked once it's done
+        QApplication.instance().applicationStateChanged.connect(self._app_state)
         self.gen = 0               # bumped by every new question or Stop: late callbacks then do nothing
         self.catalog = None
         self._press = None         # (start pos, offset, dragging) while the mouse is down on the scribble
@@ -120,6 +123,7 @@ class Aupedia(QObject):
             self.mascot.squash()
         else:
             self.stop()
+            self.stop_listening()
             if self.bubble is not None:
                 self.bubble.hide()
 
@@ -190,6 +194,7 @@ class Aupedia(QObject):
         b.reset_requested.connect(self.reset)
         b.settings_requested.connect(self.show_settings)
         b.talking.connect(self._talk)
+        b.listen_toggled.connect(self.toggle_listening)
         self.bubble = b
         return b
 
@@ -277,7 +282,7 @@ class Aupedia(QObject):
     # a question
     # ------------------------------------------------------------------
 
-    def ask(self, text, mode="do"):
+    def ask(self, text, mode="do", spoken=False):
         self.gen += 1
         gen = self.gen
         self._home_timer.stop()
@@ -294,7 +299,7 @@ class Aupedia(QObject):
                 self.history = []          # a new service or model, or a long talk: start afresh
                 self.history_owner = (prov.kind, prov.model)
             working = list(self.history)
-            prov.add_user(working, brain.user_turn(text, mode, self.catalog.state()))
+            prov.add_user(working, brain.user_turn(text, mode, self.catalog.state(), spoken))
             self._request(gen, prov, brain.system_prompt(self.catalog), working, mode, 0)
         else:
             self._run_local(gen, brain.local_answer(self.catalog, text, mode))
@@ -330,6 +335,9 @@ class Aupedia(QObject):
             self.mascot.mood = "puzzled"
             QTimer.singleShot(anim.ms(2.0), lambda: self._idle_if("puzzled"))
         self._home_timer.start(anim.ms(HOME_AFTER))
+        if self._pending_spoken:                     # they said something while it was busy
+            text, self._pending_spoken = self._pending_spoken, None
+            QTimer.singleShot(anim.ms(0.5), lambda: self._ask_spoken(text))
 
     def _say(self, text):
         if self.bubble is not None and text.strip():
@@ -488,6 +496,121 @@ class Aupedia(QObject):
 
         self.mascot.mood = "thinking"
         QTimer.singleShot(anim.ms(0.45), lambda: run(0))       # a moment's thought looks friendlier than instant
+
+    # ------------------------------------------------------------------
+    # listening: talk to it
+    # ------------------------------------------------------------------
+
+    def listening(self):
+        return self.listener is not None and self.listener.is_on()
+
+    def toggle_listening(self):
+        if self.listening() or (self.listener is not None and self.listener.status == "paused"):
+            self.stop_listening()
+        else:
+            self.start_listening()
+
+    def start_listening(self):
+        """Turn the microphone on (downloading the speech model first, the very first time)."""
+        if not self.is_shown():
+            self.set_shown(True)
+        b = self.bubble or self._make_bubble()
+        if not b.isVisible():
+            self.open_bubble()
+        if self.listener is None:
+            self.listener = listen.Listener(self)
+            self.listener.partial.connect(self._heard_partial)
+            self.listener.final.connect(self._heard)
+            self.listener.level.connect(self._hearing_level)
+            self.listener.state.connect(self._listen_state)
+            self.listener.failed.connect(self._listen_failed)
+        if listen.model_ready():
+            self.listener.start()
+            return
+        b.set_listening("loading", f"Fetching my ears: a {listen.MODEL_MB} MB speech model, just this once...")
+        self._say(f"To hear you I need a small speech model ({listen.MODEL_MB} MB, downloaded once). It "
+                  "runs on this computer, so what you say never leaves it.")
+        progress = _Progress(self)
+        progress.fraction.connect(lambda f: b.set_listening(
+            "loading", f"Fetching my ears... {int(f * 100)}% of {listen.MODEL_MB} MB"))
+        worker.run(lambda: listen.download_model(progress.fraction.emit),
+                   lambda _r: self.listener.start(), self._listen_failed)
+
+    def stop_listening(self):
+        if self.listener is not None:
+            self.listener.stop()
+        self._pending_spoken = None
+
+    def _listen_state(self, status):
+        self.mascot.listening = status == "listening"
+        if status != "listening":
+            self.mascot.ear_target = 0.0
+        if self.bubble is not None:
+            self.bubble.set_listening(status)
+        act = getattr(self.window, "act_talk_aupedia", None)
+        if act is not None and act.isCheckable():
+            act.blockSignals(True)
+            act.setChecked(status in ("loading", "listening", "paused"))
+            act.blockSignals(False)
+        if status == "listening" and not getattr(self, "_greeted_ears", False):
+            self._greeted_ears = True
+            self._say("I'm listening! Just talk: I'll write down what you say and get on with it.")
+
+    def _listen_failed(self, exc):
+        text = str(exc) if isinstance(exc, (str, listen.ListenError)) else f"Listening didn't start: {exc}"
+        if self.bubble is not None:
+            self.bubble.set_listening("off")
+        self.mascot.listening = False
+        self._say(text)
+
+    def _hearing_level(self, level):
+        self.mascot.ear_target = level
+
+    def _app_state(self, state):
+        if self.listener is not None:
+            self.listener.pause(state != Qt.ApplicationActive)
+            if self.bubble is not None and self.listener.status == "listening":
+                self.bubble.set_listening("paused" if self.listener.paused else "listening")
+
+    def _heard_partial(self, text):
+        if self.bubble is None:
+            return
+        if not self.bubble.busy:
+            self.bubble.show_partial(text)
+            if text and self.mascot.mood == "idle":
+                self.mascot.look_at = None
+
+    def _heard(self, text):
+        """A whole sentence heard: answer a "Shall I?", stop, hold it for later, or ask it."""
+        text = " ".join(text.split())
+        if not text or text.lower() in NOISE:
+            if self.bubble is not None:
+                self.bubble.show_partial("")
+            return
+        words = set(text.lower().split())
+        b = self.bubble or self._make_bubble()
+        if b.confirm_bar.isVisible():                 # "Shall I...?" answered out loud ("no" wins a tie)
+            for answer, said in ((False, words & NO), (True, words & YES)):
+                if said:
+                    b.show_user(text, spoken=True)
+                    b._answer_confirm(answer)
+                    return
+        if b.busy:
+            if words & STOP and len(words) <= 4:
+                b.show_user(text, spoken=True)
+                self.stop()
+            else:
+                self._pending_spoken = text                # asked as soon as this job is done
+                b.show_partial(text)
+            return
+        self._ask_spoken(text)
+
+    def _ask_spoken(self, text):
+        b = self.bubble or self._make_bubble()
+        if not b.isVisible():
+            self.open_bubble()
+        b.show_user(text, spoken=True)
+        self.ask(text, b.mode(), spoken=True)
 
     # ------------------------------------------------------------------
     # the paper: reading, marking up, writing and drawing
@@ -812,6 +935,17 @@ class Aupedia(QObject):
     def _modal(self):
         modal = QApplication.activeModalWidget()
         return modal if modal is not None and modal is not self.bubble else None
+
+
+NOISE = {"the", "a", "uh", "um", "huh", "hmm", "mm", "ah", "oh", "and", "but", "so", "i"}   # what silence sounds like
+YES = {"yes", "yeah", "yep", "yup", "sure", "okay", "ok", "correct", "ahead"}       # "go ahead"
+NO = {"no", "nope", "don't", "dont", "cancel", "stop", "wait", "never"}
+STOP = {"stop", "cancel", "wait", "enough", "halt"}
+
+
+class _Progress(QObject):
+    """Download progress from a worker thread, delivered on the UI thread."""
+    fraction = Signal(float)
 
 
 def _first_occurrence(quads):

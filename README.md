@@ -190,6 +190,17 @@ to Word" or "make it dark", and pick:
 
 Drag the scribble to give it a new corner; Help > Show AUPedia hides it.
 
+**Talk to it.** Click the microphone in its bubble (or **Ctrl+Shift+Space**,
+Help > Talk to AUPedia) and just speak: your words appear in the box as you
+say them, and when you pause, AUPedia takes it from there. Sound waves by
+its head show it's listening. Answer its "Shall I...?" with "yes" or "no",
+say "stop" to stop it mid-job, and if it isn't sure what you meant it asks
+you one short question, which you can answer out loud. Speech is turned
+into text on your computer (a 40 MB English model, downloaded the first
+time you switch the microphone on), so what you say never leaves it; the
+microphone pauses while you're in another app, and stays on until you click
+it again.
+
 **On the paper.** AUPedia can also work on the open PDF itself, holding its
 nib like a pen: it **reads** pages ("summarise this page", "what's the
 deposit?"), **marks text** (highlights, underlines, strikes out or circles

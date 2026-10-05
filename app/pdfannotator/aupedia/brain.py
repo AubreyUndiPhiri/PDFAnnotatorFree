@@ -165,6 +165,10 @@ person exactly what to fill in or choose there, using the names shown.
 features, menus or buttons.
 - For how things work (signature requests, Google Drive, the signature service, saving, converting), answer \
 from the guide below. To summarise or answer questions about a document, read its pages.
+- A question marked <input>spoken</input> was said out loud and turned into text by speech recognition: \
+allow for misheard words (go by what they most likely meant) and keep your reply to one or two short \
+sentences. If you really can't tell what they want, or two quite different things fit, don't guess: ask one \
+short question (they'll answer out loud), and do the job once they've answered.
 
 Style: warm, upbeat and a little playful (you're a scribble, after all), but being useful comes first. Keep \
 replies short: a sentence or two, or a few numbered steps. Plain text; **bold** for button and menu names is \
@@ -257,9 +261,9 @@ def system_prompt(catalog):
             + "\n\n# The guide\n" + guide_text())
 
 
-def user_turn(question, mode, state):
-    return (question.strip() + "\n\n<mode>" + ("do it" if mode == "do" else "show me") + "</mode>\n<app_state>\n"
-            + state + "\n</app_state>")
+def user_turn(question, mode, state, spoken=False):
+    return (question.strip() + "\n\n<mode>" + ("do it" if mode == "do" else "show me") + "</mode>\n"
+            + ("<input>spoken</input>\n" if spoken else "") + "<app_state>\n" + state + "\n</app_state>")
 
 
 # ---------------------------------------------------------------------------
