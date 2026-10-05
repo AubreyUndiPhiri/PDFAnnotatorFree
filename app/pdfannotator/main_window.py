@@ -63,6 +63,15 @@ class MainWindow(QMainWindow):
         self._wire_shortcuts()
 
         self.new_tab()
+        self._build_aupedia()
+
+    def _build_aupedia(self):
+        """AUPedia, the scribble helper: Help > Ask AUPedia (F1), or click it."""
+        from .aupedia.director import Aupedia
+
+        self.aupedia = Aupedia(self, own_actions=[self.act_ask_aupedia, self.act_show_aupedia,
+                                                  self.act_aupedia_settings])
+        self.act_show_aupedia.setChecked(self.aupedia.is_shown())
 
     # ---------------------------------------------------------------
     # Shared style state (per current_tool)
@@ -1064,7 +1073,7 @@ class MainWindow(QMainWindow):
                   self.act_save_as, self.act_save_all, self.act_print, self.act_undo, self.act_redo, self.act_cut,
                   self.act_copy, self.act_paste, self.act_find, self.act_zoom_in, self.act_zoom_out,
                   self.act_actual, self.act_fullscreen, self.act_dark, self.nav_toolbar_action, self.act_ribbon,
-                  self.act_about}
+                  self.act_about, self.act_ask_aupedia, self.act_show_aupedia, self.act_aupedia_settings}
         shared |= self.cloud.shared_actions()
         found = []
 
@@ -1265,6 +1274,13 @@ class MainWindow(QMainWindow):
 
     def _build_help_menu(self, menubar):
         m = menubar.addMenu("&Help")
+        self.act_ask_aupedia = self._add_menu_action(m, "Ask AUPedia...", lambda: self.aupedia.open_bubble(), "F1",
+                                                     icon="pen")
+        self.act_show_aupedia = self._add_menu_action(m, "Show AUPedia", lambda on: self.aupedia.set_shown(on),
+                                                      checkable=True)
+        self.act_aupedia_settings = self._add_menu_action(m, "AUPedia Settings...",
+                                                          lambda: self.aupedia.show_settings(), icon="settings")
+        m.addSeparator()
         self.act_about = self._add_menu_action(m, f"About {APP_TITLE}", self.show_about)
 
     def show_about(self):

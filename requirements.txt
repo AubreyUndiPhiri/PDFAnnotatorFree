@@ -11,3 +11,5 @@ python-docx>=1.1
 matplotlib>=3.8
 # Signature service: documents are encrypted (AES-GCM) before upload
 cryptography>=42
+# AUPedia, the scribble helper: answers and clicks with Claude (the user's own API key)
+anthropic>=1.9

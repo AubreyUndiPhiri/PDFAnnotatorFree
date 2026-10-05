@@ -13,8 +13,10 @@ a = Analysis(
            # the signing-file page (pdf-lib itself ships in assets/js)
            ('app/pdfannotator/cloud/signing_file', 'pdfannotator/cloud/signing_file'),
            # the signature service, installed into the owner's Cloudflare account
-           ('app/pdfannotator/cloud/sign_service', 'pdfannotator/cloud/sign_service')],
-    hiddenimports=['PySide6.QtSvg'],
+           ('app/pdfannotator/cloud/sign_service', 'pdfannotator/cloud/sign_service'),
+           # AUPedia answers "how does this work?" from the guide
+           ('README.md', '.')],
+    hiddenimports=['PySide6.QtSvg', 'anthropic'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
