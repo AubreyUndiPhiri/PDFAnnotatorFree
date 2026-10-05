@@ -173,11 +173,11 @@ Single-letter shortcuts are shown in brackets.
   alignment lines), Hide Annotations, Page Thumbnails (F4; also the button
   at the top of the slim rail beside the thumbnails), Toolbars.
 - **Window**: switch between open documents.
-- **Help**: Ask AUPedia (F1), Show AUPedia, AUPedia Settings, About.
+- **Help**: Ask AUPedea (F1), Show AUPedea, AUPedea Settings, About.
 
-## AUPedia, the scribble helper
+## AUPedea, the scribble helper
 
-The little ink scribble in the corner is **AUPedia**. Click it (or press
+The little ink scribble in the corner is **AUPedea**. Click it (or press
 **F1**), type a question or a job, like "how do I sign this?", "convert this
 to Word" or "make it dark", and pick:
 
@@ -188,11 +188,18 @@ to Word" or "make it dark", and pick:
   (for example, what to fill in on a dialog it opened). Anything that closes,
   deletes or removes asks you first.
 
-Drag the scribble to give it a new corner; Help > Show AUPedia hides it.
+Drag the scribble to give it a new corner; Help > Show AUPedea hides it.
+
+The chat is small and a little see-through (solid while your mouse is over
+it or you're typing); drag it by its top. While AUPedea works on something,
+and while it's listening, the chat tucks itself away: a little speech bubble
+over the scribble's head shows what it hears, what it's doing, its short
+replies and any "Shall I...?". Click the scribble or that bubble to open the
+whole chat.
 
 **Talk to it.** Click the microphone in its bubble (or **Ctrl+Shift+Space**,
-Help > Talk to AUPedia) and just speak: your words appear in the box as you
-say them, and when you pause, AUPedia takes it from there. Sound waves by
+Help > Talk to AUPedea) and just speak: your words appear in the box as you
+say them, and when you pause, AUPedea takes it from there. Sound waves by
 its head show it's listening. Answer its "Shall I...?" with "yes" or "no",
 say "stop" to stop it mid-job, and if it isn't sure what you meant it asks
 you one short question, which you can answer out loud. Speech is turned
@@ -201,7 +208,7 @@ time you switch the microphone on), so what you say never leaves it; the
 microphone pauses while you're in another app, and stays on until you click
 it again.
 
-**On the paper.** AUPedia can also work on the open PDF itself, holding its
+**On the paper.** AUPedea can also work on the open PDF itself, holding its
 nib like a pen: it **reads** pages ("summarise this page", "what's the
 deposit?"), **marks text** (highlights, underlines, strikes out or circles
 words), **writes** notes and answers in its handwriting (or in print), and
@@ -210,9 +217,9 @@ lines and arrows. You watch it fly to the spot and draw or write it, then it
 becomes a normal annotation: move it, edit it, or take it back with Undo.
 Only in **Do it for me**; **Show me** never changes the paper.
 
-**Its brain.** On its own, AUPedia finds buttons by their names and can
+**Its brain.** On its own, AUPedea finds buttons by their names and can
 highlight, underline, strike out or circle words you name ("highlight
-'monthly rent'"). For everything else, give it an AI in AUPedia Settings
+'monthly rent'"). For everything else, give it an AI in AUPedea Settings
 (the gear in its bubble) and choose the model:
 
 - **Claude** (Anthropic): an API key from console.anthropic.com; Claude Opus
@@ -226,7 +233,7 @@ highlight, underline, strike out or circle words you name ("highlight
 Keys are your own and stored encrypted for your Windows account; each
 question costs a little on that account. Questions, the list of menus, and
 what's open (file names, page, tool) go to the service you choose. When
-AUPedia reads or marks up a page, that page's text (and a picture of it, for
+AUPedea reads or marks up a page, that page's text (and a picture of it, for
 models that can see) goes too. The code is in `app/pdfannotator/aupedia/`.
 
 ## Signatures
