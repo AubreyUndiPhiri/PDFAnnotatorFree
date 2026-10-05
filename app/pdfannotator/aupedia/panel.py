@@ -7,13 +7,14 @@ import math
 import re
 
 from PySide6.QtCore import (
-    QEasingCurve, QParallelAnimationGroup, QPoint, QPointF, QPropertyAnimation, QRectF, QSize, Qt, QTimer, QUrl,
+    QEasingCurve, QObject, QParallelAnimationGroup, QPoint, QPointF, QPropertyAnimation, QRectF, QSize, Qt, QTimer,
+    QUrl,
     Signal,
 )
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QPainter, QPainterPath, QPen, QTextDocument
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFormLayout, QGraphicsOpacityEffect, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QRadioButton, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
+    QLabel, QLineEdit, QProgressBar, QPushButton, QRadioButton, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
 from .. import icons, theme
@@ -666,14 +667,26 @@ class MiniBubble(QWidget):
         p.end()
 
 
+class _PullProgress(QObject):
+    """Download progress from a worker thread, delivered on the UI thread."""
+    update = Signal(object, str)
+
+
 class AupediaSettingsDialog(QDialog):
     """Which AI AUPedea thinks with (Claude or Hugging Face), its key and model, and whether it
     shows up on start."""
 
     SEES = "  \U0001F441"             # marks Hugging Face models that can see pictures of pages
 
-    def __init__(self, show_on_start=True, parent=None, hf_fetch=None):
+    def __init__(self, show_on_start=True, parent=None, hf_fetch=None, local_fetch=None, local_caps=None,
+                 local_pull=None):
         super().__init__(parent)
+        self.local_fetch = local_fetch or brain.ollama_models
+        self.local_caps = local_caps or (lambda model: brain.Ollama(model).capabilities())
+        self.local_pull = local_pull or brain.ollama_pull
+        self.local_installed = {}         # model name -> size in GB
+        self.local_vision = {}            # model name -> can see pictures
+        self.local_running = None
         self.setWindowTitle("AUPedea Settings")
         self.setMinimumWidth(560)
         self.hf_fetch = hf_fetch or brain.hf_models
@@ -688,7 +701,10 @@ class AupediaSettingsDialog(QDialog):
         self.provider_group = QButtonGroup(self)
         self.use_claude = QRadioButton("Claude (Anthropic)")
         self.use_hf = QRadioButton("Hugging Face")
-        for btn in (self.use_claude, self.use_hf):
+        self.use_local = QRadioButton("On this computer")
+        self.use_local.setToolTip("A model running on your own computer with Ollama: free, works offline, and "
+                                  "nothing you ask leaves the computer")
+        for btn in (self.use_claude, self.use_hf, self.use_local):
             self.provider_group.addButton(btn)
             pick.addWidget(btn)
         pick.addStretch()
@@ -748,6 +764,50 @@ class AupediaSettingsDialog(QDialog):
         self.hf_model.currentTextChanged.connect(self._update_hf_note)
         layout.addWidget(self.hf_box)
 
+        # ---- on this computer (Ollama)
+        self.local_box = QWidget()
+        form = QFormLayout(self.local_box)
+        form.setContentsMargins(0, 0, 0, 0)
+        self.ollama_state = QLabel("Checking for Ollama...")
+        self.ollama_state.setObjectName("muted")
+        self.ollama_state.setWordWrap(True)
+        state_row = QHBoxLayout()
+        state_row.addWidget(self.ollama_state, 1)
+        self.install_btn = QPushButton("Get Ollama...")
+        self.install_btn.setToolTip("Ollama runs AI models on your own computer (free)")
+        self.install_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(brain.OLLAMA_DOWNLOAD_URL)))
+        state_row.addWidget(self.install_btn)
+        recheck = QPushButton("Check Again")
+        recheck.clicked.connect(self.check_local)
+        state_row.addWidget(recheck)
+        form.addRow("Ollama", state_row)
+        self.local_model = QComboBox()
+        self.local_model.setEditable(True)        # any model from ollama.com/library
+        self.local_model.setMinimumWidth(300)
+        model_row = QHBoxLayout()
+        model_row.addWidget(self.local_model, 1)
+        self.pull_btn = QPushButton("Download")
+        self.pull_btn.setToolTip("Download this model into Ollama (once)")
+        self.pull_btn.clicked.connect(self.download_local)
+        model_row.addWidget(self.pull_btn)
+        form.addRow("Model", model_row)
+        self.pull_bar = QProgressBar()
+        self.pull_bar.setRange(0, 1000)
+        self.pull_bar.setTextVisible(False)
+        self.pull_bar.setFixedHeight(6)
+        self.pull_bar.hide()
+        form.addRow("", self.pull_bar)
+        self.local_note = QLabel()
+        self.local_note.setObjectName("muted")
+        self.local_note.setWordWrap(True)
+        form.addRow("", self.local_note)
+        self._chosen_local = chosen["local_model"]
+        if chosen["local_vision"]:                 # otherwise asked of the model once Ollama answers
+            self.local_vision[chosen["local_model"]] = True
+        self._fill_local_models()
+        self.local_model.currentTextChanged.connect(self._local_changed)
+        layout.addWidget(self.local_box)
+
         self.status = QLabel("Keys are stored encrypted for your Windows account. Questions, the list of menus "
                              "and what's open (file names, page, tool) go to the service you choose; when AUPedea "
                              "reads or marks up a page, that page's text (and a picture of it, for models that "
@@ -767,7 +827,8 @@ class AupediaSettingsDialog(QDialog):
         ok.clicked.connect(self.accept)
         layout.addLayout(_button_row(cancel, ok, leading=[test]))
 
-        (self.use_hf if chosen["provider"] == brain.HUGGINGFACE else self.use_claude).setChecked(True)
+        {brain.HUGGINGFACE: self.use_hf, brain.OLLAMA: self.use_local}.get(chosen["provider"],
+                                                                            self.use_claude).setChecked(True)
         self.provider_group.buttonToggled.connect(lambda *_: self._show_provider())
         self._show_provider()
         self._update_hf_note()
@@ -821,17 +882,139 @@ class AupediaSettingsDialog(QDialog):
 
     # ---- the rest
     def provider(self):
+        if self.use_local.isChecked():
+            return brain.OLLAMA
         return brain.HUGGINGFACE if self.use_hf.isChecked() else brain.CLAUDE
 
     def _show_provider(self):
         self.claude_box.setVisible(self.provider() == brain.CLAUDE)
         self.hf_box.setVisible(self.provider() == brain.HUGGINGFACE)
+        self.local_box.setVisible(self.provider() == brain.OLLAMA)
+        if self.provider() == brain.OLLAMA and self.local_running is None:
+            self.check_local()
         self.adjustSize()
+
+    # ---- on this computer
+    def local_model_id(self):
+        i = self.local_model.currentIndex()
+        text = self.local_model.currentText().strip()
+        if i >= 0 and self.local_model.itemText(i) == text:
+            return self.local_model.itemData(i) or text
+        return text.split("  (")[0].lstrip("\u2713 ").strip()
+
+    def _is_installed(self, name):
+        return name in self.local_installed or f"{name}:latest" in self.local_installed
+
+    def _fill_local_models(self):
+        current = self.local_model_id() if self.local_model.count() else self._chosen_local
+        names = list(self.local_installed) + [m for m, _d in brain.OLLAMA_MODELS if not self._is_installed(m)]
+        if current and current not in names and not self._is_installed(current):
+            names.append(current)
+        sizes = {m: d.split("about ")[1].split(",")[0] for m, d in brain.OLLAMA_MODELS}
+        self.local_model.blockSignals(True)
+        self.local_model.clear()
+        for name in names:
+            if self._is_installed(name):
+                label = f"\u2713 {name}" + (self.SEES if self.local_vision.get(name) else "")
+            else:
+                label = f"{name}  (download, {sizes.get(name, 'size unknown')})"
+            self.local_model.addItem(label, name)
+        i = self.local_model.findData(current)
+        self.local_model.setCurrentIndex(i if i >= 0 else 0)
+        self.local_model.blockSignals(False)
+        self._local_changed()
+
+    def _local_changed(self, *_):
+        name = self.local_model_id()
+        about = dict(brain.OLLAMA_MODELS).get(name, "")
+        if self.local_running is False:
+            self.pull_btn.setEnabled(False)
+            self.local_note.setText("Install Ollama (free, about 1 GB), start it, then click Check Again. "
+                                    "Then pick a model and click Download.")
+            return
+        installed = self._is_installed(name)
+        self.pull_btn.setEnabled(bool(name) and not installed)
+        self.pull_btn.setText("Downloaded" if installed else "Download")
+        sees = self.local_vision.get(name)
+        parts = [about] if about else []
+        parts.append("Ready to use." if installed else "Not downloaded yet: click Download (once).")
+        if installed and sees is not None:
+            parts.append("It can see pictures of your pages." if sees else "It reads your pages' text.")
+        parts.append("Runs on this computer: nothing you ask leaves it. Slower than the online AIs, and best at "
+                     "simpler jobs.")
+        self.local_note.setText(" ".join(parts))
+        if installed and name not in self.local_vision:
+            self._learn_caps(name)
+
+    def _learn_caps(self, name):
+        from ..cloud import worker
+
+        def done(caps):
+            self.local_vision[name] = "vision" in caps
+            if self.local_model_id() == name:
+                self._fill_local_models()
+
+        worker.run(lambda: set(self.local_caps(name)), done, lambda _e: None)
+
+    def check_local(self):
+        from ..cloud import worker
+
+        self.ollama_state.setText("Checking for Ollama...")
+
+        def done(models):
+            self.local_running = True
+            self.local_installed = {name: size for name, size in models}
+            count = len(models)
+            self.ollama_state.setText(f"Running, with {count} model{'s' if count != 1 else ''} downloaded."
+                                      if count else "Running. No models downloaded yet.")
+            self.install_btn.setVisible(False)
+            self._fill_local_models()
+
+        def failed(_exc):
+            self.local_running = False
+            self.ollama_state.setText("Not found: Ollama isn't installed, or isn't running.")
+            self.install_btn.setVisible(True)
+            self._local_changed()
+
+        worker.run(self.local_fetch, done, failed)
+
+    def download_local(self):
+        from ..cloud import worker
+
+        name = self.local_model_id()
+        if not name or self._is_installed(name):
+            return
+        progress = _PullProgress(self)
+        progress.update.connect(self._pull_progress)
+        self.pull_btn.setEnabled(False)
+        self.pull_bar.setValue(0)
+        self.pull_bar.show()
+        self.local_note.setText(f"Downloading {name}... (you can keep using the app)")
+
+        def done(_r):
+            self.pull_bar.hide()
+            self.check_local()
+
+        def failed(exc):
+            self.pull_bar.hide()
+            self.pull_btn.setEnabled(True)
+            self.local_note.setText(brain.friendly_error(exc, brain.OLLAMA))
+
+        worker.run(lambda: self.local_pull(name, progress.update.emit), done, failed)
+
+    def _pull_progress(self, fraction, status):
+        if fraction is not None:
+            self.pull_bar.setValue(int(fraction * 1000))
+            self.local_note.setText(f"Downloading {self.local_model_id()}... {int(fraction * 100)}%")
+        elif status:
+            self.local_note.setText(f"Downloading {self.local_model_id()}... ({status})")
 
     def _test(self):
         from ..cloud import worker
 
-        if self.provider() == brain.CLAUDE:
+        if self.provider() == brain.OLLAMA:
+            prov = brain.Ollama(self.local_model_id())
+        elif self.provider() == brain.CLAUDE:
             key = self.claude_key.text().strip() or brain.api_key(brain.CLAUDE)
             prov = brain.Claude(key, self.claude_model.currentData()) if key else None
         else:
@@ -852,6 +1035,8 @@ class AupediaSettingsDialog(QDialog):
             else:
                 brain.forget_key(kind)
         mid = self.hf_model_id() or brain.HF_DEFAULT
+        local = self.local_model_id() or brain.OLLAMA_DEFAULT
         brain.save_choices(provider=self.provider(), claude_model=self.claude_model.currentData(),
-                           hf_model=mid, hf_vision=bool(self.hf_vision.get(mid)))
+                           hf_model=mid, hf_vision=bool(self.hf_vision.get(mid)), local_model=local,
+                           local_vision=bool(self.local_vision.get(local)))
         super().accept()

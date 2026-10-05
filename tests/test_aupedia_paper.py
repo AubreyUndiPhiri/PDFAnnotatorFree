@@ -297,7 +297,7 @@ def test_settings_choose_huggingface_and_a_model(app, tmp_path, monkeypatch):
         assert "Can see pictures" in dlg.hf_note.text()
         dlg.claude_model.setCurrentIndex(dlg.claude_model.findData("claude-sonnet-5-5"))
         dlg.accept()
-        c = brain.choices()
+        c = {k: v for k, v in brain.choices().items() if not k.startswith("local")}
         assert c == {"provider": brain.HUGGINGFACE, "claude_model": "claude-sonnet-5-5", "hf_model": "org/sees",
                      "hf_vision": True}
         assert brain.api_key(brain.HUGGINGFACE) == "hf_secret_token" and brain.api_key(brain.CLAUDE) == ""

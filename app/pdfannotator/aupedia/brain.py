@@ -29,6 +29,7 @@ GUIDES = [_HERE.parents[2] / "README.md", _HERE.parents[3] / "README.md"]   # bu
 
 CLAUDE = "claude"
 HUGGINGFACE = "huggingface"
+OLLAMA = "ollama"                  # a model running on this computer (Ollama): no key, nothing leaves it
 
 CLAUDE_KEYS_URL = "https://console.anthropic.com/settings/keys"
 CLAUDE_MODELS = [
@@ -59,6 +60,21 @@ HF_MODELS = [
     ("meta-llama/Llama-3.3-70B-Instruct", False),
     ("google/gemma-4-31B-it", True),
 ]
+
+
+OLLAMA_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+if not OLLAMA_URL.startswith("http"):
+    OLLAMA_URL = "http://" + OLLAMA_URL
+OLLAMA_DOWNLOAD_URL = "https://ollama.com/download/windows"
+OLLAMA_DEFAULT = "qwen3:4b"
+# small models that use tools and fit an ordinary laptop (name, what it's like)
+OLLAMA_MODELS = [
+    ("qwen3:4b", "Qwen3 4B: about 2.5 GB, the best of the small ones"),
+    ("llama3.2:3b", "Llama 3.2 3B: about 2 GB, a little quicker"),
+    ("qwen3:1.7b", "Qwen3 1.7B: about 1.4 GB, quickest, simple jobs only"),
+    ("qwen3:8b", "Qwen3 8B: about 5 GB, cleverer, needs 16 GB of memory"),
+]
+OLLAMA_CONTEXT = 8192              # tokens the model keeps in mind (more is slower on a laptop)
 
 
 # ---------------------------------------------------------------------------
@@ -110,21 +126,28 @@ def choices():
     return {"provider": s.value("aupedia/provider", CLAUDE),
             "claude_model": s.value("aupedia/claude_model", MODEL),
             "hf_model": s.value("aupedia/hf_model", HF_DEFAULT),
-            "hf_vision": str(s.value("aupedia/hf_vision", "false")) == "true"}
+            "hf_vision": str(s.value("aupedia/hf_vision", "false")) == "true",
+            "local_model": s.value("aupedia/local_model", OLLAMA_DEFAULT),
+            "local_vision": str(s.value("aupedia/local_vision", "false")) == "true"}
 
 
-def save_choices(provider=None, claude_model=None, hf_model=None, hf_vision=None):
+def save_choices(provider=None, claude_model=None, hf_model=None, hf_vision=None, local_model=None,
+                 local_vision=None):
     s = theme._settings()
-    for key, value in (("provider", provider), ("claude_model", claude_model), ("hf_model", hf_model)):
+    for key, value in (("provider", provider), ("claude_model", claude_model), ("hf_model", hf_model),
+                       ("local_model", local_model)):
         if value:
             s.setValue(f"aupedia/{key}", value)
-    if hf_vision is not None:
-        s.setValue("aupedia/hf_vision", "true" if hf_vision else "false")
+    for key, value in (("hf_vision", hf_vision), ("local_vision", local_vision)):
+        if value is not None:
+            s.setValue(f"aupedia/{key}", "true" if value else "false")
 
 
 def make_provider():
-    """The chosen service if it has a key, else the other one if that has a key, else None."""
+    """The chosen service (one on this computer needs no key), else an online one that has a key, else None."""
     c = choices()
+    if c["provider"] == OLLAMA:
+        return Ollama(c["local_model"], c["local_vision"])
     order = [c["provider"], HUGGINGFACE if c["provider"] == CLAUDE else CLAUDE]
     for kind in order:
         key = api_key(kind)
@@ -255,8 +278,15 @@ def guide_text():
     return "(The guide isn't available.)"
 
 
-def system_prompt(catalog):
-    """Stable between questions (the command list and the guide), so it's cached."""
+LEAN_NOTE = """Note: you're a small model running on this computer, so keep to what you can do well: one job at a \
+time, a few tool calls, short replies. Use only ids from the list below. There's no guide here: if asked how something works and you're not sure, point at the menu that has it rather than guessing."""
+
+
+def system_prompt(catalog, lean=False):
+    """Stable between questions (the command list and the guide), so it's cached. Lean (for a small model on
+    this computer, where every token is read by a laptop's processor): a shorter command list and no guide."""
+    if lean:
+        return PERSONA + "\n\n" + LEAN_NOTE + "\n\n# Commands (id: where it is)\n" + catalog.describe(compact=True)
     return (PERSONA + "\n\n# Commands (id: where it is [shortcut] - what it does)\n" + catalog.describe()
             + "\n\n# The guide\n" + guide_text())
 
@@ -437,6 +467,159 @@ class HuggingFace:
                        headers={"Authorization": f"Bearer {self.key}"}, timeout=30)
 
 
+class OllamaNotRunning(Exception):
+    """Ollama isn't installed, or isn't running."""
+
+
+class OllamaSlow(Exception):
+    """The model took longer than we wait."""
+
+
+class Ollama:
+    """A model running on this computer with Ollama (its own chat API: tools, pictures, and thinking off,
+    which a laptop needs). No key, nothing leaves the computer; slower, and best at simpler jobs."""
+    kind = OLLAMA
+    lean = True                     # a short system prompt: a laptop reads every token of it
+
+    def __init__(self, model=None, vision=False, url=None, transport=None):
+        self.key = ""
+        self.model = model or OLLAMA_DEFAULT
+        self.vision = bool(vision)
+        self.url = (url or OLLAMA_URL).rstrip("/")
+        self.transport = transport or http_request
+        self._caps = None
+        self._names = {}             # call id -> tool name (Ollama answers tool results by name)
+
+    def label(self):
+        return self.model
+
+    def available(self):
+        return True
+
+    def _req(self, method, path, body=None, timeout=30):
+        data = json.dumps(body).encode() if body is not None else None
+        _s, _h, raw = self.transport(method, self.url + path, data=data,
+                                     headers={"Content-Type": "application/json"} if data else None, timeout=timeout)
+        return json.loads(raw) if raw else {}
+
+    def running(self):
+        try:
+            self._req("GET", "/api/version", timeout=3)
+            return True
+        except (Offline, ApiError, ValueError):
+            return False
+
+    def capabilities(self):
+        if self._caps is None:
+            try:
+                self._caps = set(self._req("POST", "/api/show", {"model": self.model}).get("capabilities") or [])
+            except (Offline, ApiError, ValueError):
+                self._caps = set()
+        return self._caps
+
+    def warm_up(self):
+        """Load the model into memory now, so the first question doesn't wait for it."""
+        self._req("POST", "/api/generate", {"model": self.model, "keep_alive": "30m"}, timeout=300)
+
+    def call(self, system, conversation):
+        body = {"model": self.model, "stream": False, "keep_alive": "30m",
+                "messages": [{"role": "system", "content": system}] + conversation,
+                "tools": [{"type": "function", "function": {"name": t["name"], "description": t["description"],
+                                                            "parameters": t["parameters"]}} for t in TOOLS],
+                "options": {"num_ctx": OLLAMA_CONTEXT, "temperature": 0.3}}
+        if "thinking" in self.capabilities():
+            body["think"] = False    # thinking out loud takes minutes on a laptop's processor
+        try:
+            data = self._req("POST", "/api/chat", body, timeout=900)
+        except Offline:
+            raise (OllamaSlow() if self.running() else OllamaNotRunning()) from None
+        msg = data.get("message") or {}
+        reply = Reply()
+        content = (msg.get("content") or "").strip()
+        if content:
+            reply.texts.append(content)
+        calls = []
+        for i, call in enumerate(msg.get("tool_calls") or []):
+            fn = call.get("function") or {}
+            args = fn.get("arguments") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    args = {"__invalid__": args[:200]}
+            call_id = call.get("id") or f"call_{len(self._names)}_{i}"
+            self._names[call_id] = fn.get("name", "")
+            reply.calls.append((call_id, fn.get("name", ""), args if isinstance(args, dict) else {}))
+            calls.append({"function": {"name": fn.get("name", ""), "arguments": args}})
+        reply.raw = {"role": "assistant", "content": msg.get("content") or ""}
+        if calls:
+            reply.raw["tool_calls"] = calls
+        reply.stop = "tool" if reply.calls else ("max_tokens" if data.get("done_reason") == "length" else "end")
+        return reply
+
+    def add_user(self, conversation, text):
+        conversation.append({"role": "user", "content": text})
+
+    def add_reply(self, conversation, reply):
+        conversation.append(reply.raw)
+
+    def add_results(self, conversation, results):
+        images = []
+        for r in results:
+            conversation.append({"role": "tool", "tool_name": self._names.get(r.call_id, ""),
+                                 "content": ("Error: " if r.error else "") + r.text})
+            if r.image and self.vision:
+                images.append(base64.b64encode(r.image).decode())
+        if images:
+            conversation.append({"role": "user", "content": "Here is what the page looks like.", "images": images})
+
+    def check(self):
+        if not self.running():
+            raise OllamaNotRunning()
+        names = [n for n, _size in ollama_models(self.transport, self.url)]
+        if self.model not in names and f"{self.model}:latest" not in names:
+            raise ApiError(404, f"model '{self.model}' not found")
+
+
+def ollama_models(transport=None, url=None):
+    """[(model name, size in GB)] downloaded into Ollama on this computer."""
+    _s, _h, raw = (transport or http_request)("GET", (url or OLLAMA_URL) + "/api/tags", timeout=5)
+    return [(m.get("name") or m.get("model"), (m.get("size") or 0) / 1e9) for m in json.loads(raw).get("models", [])]
+
+
+def ollama_pull(model, progress=lambda fraction, status: None, url=None, open_stream=None):
+    """Download a model into Ollama (in a worker thread), reporting progress as it goes."""
+    import urllib.error
+    import urllib.request
+
+    url = (url or OLLAMA_URL) + "/api/pull"
+    body = json.dumps({"model": model, "stream": True}).encode()
+    if open_stream is None:
+        def open_stream():
+            req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+            try:
+                return urllib.request.urlopen(req, timeout=60)
+            except (urllib.error.URLError, OSError):
+                raise OllamaNotRunning() from None
+    stream = open_stream()
+    try:
+        for line in stream:
+            line = line.strip()
+            if not line:
+                continue
+            event = json.loads(line)
+            if event.get("error"):
+                raise ApiError(404 if "not found" in event["error"] else 500, event["error"])
+            total, done = event.get("total"), event.get("completed")
+            progress(min(1.0, done / total) if total and done else None, event.get("status", ""))
+            if event.get("status") == "success":
+                return
+    finally:
+        close = getattr(stream, "close", None)
+        if close:
+            close()
+
+
 def hf_models(transport=None):
     """[(model id, can see pictures)] for every live Hugging Face model whose providers do tool calls."""
     _s, _h, raw = (transport or http_request)("GET", HF_ROUTER + "/models", timeout=30)
@@ -450,6 +633,17 @@ def hf_models(transport=None):
 
 
 def friendly_error(exc, kind=CLAUDE):
+    if isinstance(exc, OllamaNotRunning):
+        return ("My offline brain isn't running. Install Ollama from ollama.com (or start it), then try again; "
+                "or pick another brain in my settings (the gear).")
+    if isinstance(exc, OllamaSlow):
+        return "The model on this computer took too long to answer. Try a shorter question, or a smaller model."
+    if kind == OLLAMA and isinstance(exc, ApiError):
+        if exc.status == 404 or "not found" in str(exc.message).lower():
+            return "That model isn't downloaded yet: open my settings (the gear) and click Download."
+        if "does not support tools" in str(exc.message).lower():
+            return "That model can't use tools, so it can't click or mark up for me. Pick another in my settings."
+        return f"Ollama said: {exc.message}"
     if isinstance(exc, Offline):
         return "I couldn't reach " + ("Claude" if kind == CLAUDE else "Hugging Face") + ". Check the internet connection."
     if isinstance(exc, ApiError):

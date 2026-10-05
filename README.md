@@ -229,6 +229,16 @@ highlight, underline, strike out or circle words you name ("highlight
   Inference Providers" (huggingface.co/settings/tokens); pick a model from
   the live list of models that can use tools (**Refresh List**; 👁 marks the
   ones that can see pictures of pages), or type any model id.
+- **On this computer** (offline, free, no key): install Ollama
+  (ollama.com, **Get Ollama...** in the settings), pick a model and click
+  **Download** (once). Nothing you ask leaves the computer. Small models
+  suit an ordinary laptop: Qwen3 4B (about 2.5 GB, recommended), Llama 3.2 3B
+  (about 2 GB) or Qwen3 1.7B (about 1.4 GB); Qwen3 8B needs about 16 GB of
+  memory. They're slower than the online AIs (the first answer after
+  starting takes longest, while the model loads and reads its instructions)
+  and best at simpler, one-step jobs; AUPedea gives them shorter
+  instructions (no guide) and switches their "thinking" off to keep them
+  quick.
 
 Keys are your own and stored encrypted for your Windows account; each
 question costs a little on that account. Questions, the list of menus, and

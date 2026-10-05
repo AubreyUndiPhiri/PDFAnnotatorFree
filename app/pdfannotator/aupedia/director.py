@@ -269,8 +269,11 @@ class Aupedia(QObject):
             if prov is None:
                 self.bubble.set_status("offline finder (add a key in settings)")
             else:
-                name = "Claude" if prov.kind == brain.CLAUDE else "Hugging Face"
-                self.bubble.set_status(f"thinking with {name}: {prov.label()}")
+                if prov.kind == brain.OLLAMA:
+                    self.bubble.set_status(f"thinking on this computer: {prov.label()}")
+                else:
+                    name = "Claude" if prov.kind == brain.CLAUDE else "Hugging Face"
+                    self.bubble.set_status(f"thinking with {name}: {prov.label()}")
 
     def _talk(self, level):
         self.mascot.talk = level
@@ -298,6 +301,8 @@ class Aupedia(QObject):
         """The AI service to think with (Claude or Hugging Face), or None to use the offline finder."""
         if self.provider is None:
             self.provider = brain.make_provider() or False
+            if self.provider and self.provider.kind == brain.OLLAMA:
+                worker.run(self.provider.warm_up, None, lambda _e: None)   # load it now, not on the first question
         return self.provider or None
 
     # ------------------------------------------------------------------
@@ -325,7 +330,9 @@ class Aupedia(QObject):
                 self.history_owner = (prov.kind, prov.model)
             working = list(self.history)
             prov.add_user(working, brain.user_turn(text, mode, self.catalog.state(), spoken))
-            self._request(gen, prov, brain.system_prompt(self.catalog), working, mode, 0)
+            if getattr(prov, "lean", False):
+                self.mini.say("Thinking on this computer...", "status")
+            self._request(gen, prov, brain.system_prompt(self.catalog, getattr(prov, "lean", False)), working, mode, 0)
         else:
             self._run_local(gen, brain.local_answer(self.catalog, text, mode))
 

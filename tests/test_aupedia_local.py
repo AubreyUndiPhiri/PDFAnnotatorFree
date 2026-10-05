@@ -1,0 +1,220 @@
+"""AUPedea's offline brain: a model running on this computer with Ollama,
+played here by a fake Ollama (its real chat API shapes: tool calls without
+ids, arguments as objects, tool results by name, thinking switched off).
+
+    python -m pytest tests/test_aupedia_local.py
+"""
+import json
+import os
+import sys
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+sys.path.insert(0, os.path.dirname(__file__))
+
+import pymupdf as fitz
+import pytest
+from PySide6.QtWidgets import QApplication
+
+from pdfannotator.aupedia import anim, brain, catalog
+from pdfannotator.cloud.google_auth import ApiError, Offline
+from test_aupedia import bubble_text, done_talking, wait
+
+
+@pytest.fixture(scope="module")
+def app():
+    return QApplication.instance() or QApplication([])
+
+
+class FakeOllama:
+    """Answers like Ollama on localhost:11434."""
+
+    def __init__(self, chats=(), models=(("qwen3:4b", 2.5e9),), caps=("completion", "tools", "thinking"),
+                 running=True):
+        self.chats, self.models, self.caps, self.is_running = list(chats), list(models), list(caps), running
+        self.calls = []
+
+    def __call__(self, method, url, params=None, data=None, headers=None, timeout=None):
+        path = url.split("11434", 1)[1]
+        body = json.loads(data) if data else None
+        self.calls.append({"method": method, "path": path, "body": body, "timeout": timeout})
+        if not self.is_running:
+            raise Offline("Can't reach localhost")
+        if path == "/api/version":
+            reply = {"version": "0.12.0"}
+        elif path == "/api/tags":
+            reply = {"models": [{"name": n, "model": n, "size": size} for n, size in self.models]}
+        elif path == "/api/show":
+            reply = {"capabilities": self.caps}
+        elif path == "/api/generate":
+            reply = {"done": True}
+        elif path == "/api/chat":
+            reply = self.chats.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+        else:
+            raise ApiError(404, "not found")
+        return 200, {}, json.dumps(reply).encode()
+
+    def chat_bodies(self):
+        return [c["body"] for c in self.calls if c["path"] == "/api/chat"]
+
+
+def said(content="", tool_calls=None, done_reason="stop"):
+    msg = {"role": "assistant", "content": content}
+    if tool_calls:
+        msg["tool_calls"] = [{"function": {"name": n, "arguments": a}} for n, a in tool_calls]
+    return {"model": "qwen3:4b", "message": msg, "done": True, "done_reason": done_reason}
+
+
+@pytest.fixture
+def win(app, tmp_path, monkeypatch):
+    from pdfannotator.main_window import MainWindow
+
+    monkeypatch.setattr(anim, "SPEED", 25.0)
+    monkeypatch.setattr(brain, "KEY_FILE", tmp_path / "key.bin")
+    for var in ("ANTHROPIC_API_KEY", "HF_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    src = tmp_path / "lease.pdf"
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 140), "Monthly rent is 500 dollars.", fontsize=12)
+    doc.save(src)
+    w = MainWindow()
+    w.resize(1200, 860)
+    w.show()
+    w.current_tab().load(str(src))
+    w.aupedia.set_shown(True)
+    app.processEvents()
+    yield w
+    w.aupedia.stop()
+    if w.aupedia.bubble is not None:
+        w.aupedia.bubble.close()
+    w.current_tab().document._dirty = False
+    w.close()
+
+
+def test_a_lean_prompt_for_a_small_model(win):
+    cat = catalog.Catalog(win)
+    full, lean = brain.system_prompt(cat), brain.system_prompt(cat, lean=True)
+    assert "# The guide" in full and "# The guide" not in lean                 # the long guide stays out
+    assert "file/convert_to_word: File > Convert to Word" in lean and " - Convert the PDF" not in lean
+    assert len(lean) < len(full) / 3 and "small model" in lean
+
+
+def test_works_on_the_page_with_a_model_on_this_computer(app, win):
+    a = win.aupedia
+    fake = FakeOllama([
+        said("", [("mark_text", {"page": 1, "text": "500 dollars", "style": "highlight"})]),
+        said("Highlighted the rent for you."),
+    ])
+    a.provider = brain.Ollama("qwen3:4b", transport=fake)
+    a.open_bubble()
+    assert "on this computer: qwen3:4b" in a.bubble.status.toolTip()
+    a.ask("highlight the rent", "do")
+    assert wait(app, lambda: a.mini.text.startswith("Thinking on this computer"), 5)
+    assert wait(app, lambda: done_talking(win) and "Highlighted the rent" in bubble_text(win), 20)
+    page = win.current_tab().document.page(0)
+    assert [x.type[1] for x in page.annots()] == ["Highlight"]
+    first, second = fake.chat_bodies()
+    assert first["model"] == "qwen3:4b" and first["stream"] is False and first["think"] is False
+    assert first["options"]["num_ctx"] == brain.OLLAMA_CONTEXT and first["keep_alive"]
+    assert first["messages"][0]["role"] == "system" and "# The guide" not in first["messages"][0]["content"]
+    assert {t["function"]["name"] for t in first["tools"]} >= {"click", "mark_text", "draw"}
+    assert second["messages"][-2]["tool_calls"][0]["function"]["arguments"] == {
+        "page": 1, "text": "500 dollars", "style": "highlight"}                 # its turn went back as it was
+    result = second["messages"][-1]
+    assert result["role"] == "tool" and result["tool_name"] == "mark_text" and "Marked" in result["content"]
+    assert [c["timeout"] for c in fake.calls if c["path"] == "/api/chat"] == [900, 900]   # a laptop can be slow
+
+
+def test_no_thinking_switch_for_models_that_dont_think():
+    fake = FakeOllama([said("Hi!")], caps=("completion", "tools"))
+    prov = brain.Ollama("llama3.2:3b", transport=fake)
+    reply = prov.call("system", [{"role": "user", "content": "hi"}])
+    assert reply.texts == ["Hi!"] and reply.stop == "end"
+    assert "think" not in fake.chat_bodies()[0]
+
+
+def test_says_when_it_isnt_running_or_is_too_slow(app, win):
+    a = win.aupedia
+    a.provider = brain.Ollama("qwen3:4b", transport=FakeOllama(running=False))
+    a.open_bubble()
+    a.ask("hello", "do")
+    assert wait(app, lambda: done_talking(win) and "Install Ollama from ollama.com" in bubble_text(win), 15)
+    slow = FakeOllama([Offline("timed out")])
+    a.provider = brain.Ollama("qwen3:4b", transport=slow)
+    a.ask("hello again", "do")
+    assert wait(app, lambda: done_talking(win) and "took too long" in bubble_text(win), 15)
+    missing = FakeOllama([ApiError(404, "model 'qwen3:4b' not found, try pulling it first")])
+    a.provider = brain.Ollama("qwen3:4b", transport=missing)
+    a.ask("and again", "do")
+    assert wait(app, lambda: done_talking(win) and "isn't downloaded yet" in bubble_text(win), 15)
+
+
+def test_chosen_without_any_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(brain, "KEY_FILE", tmp_path / "key.bin")
+    for var in ("ANTHROPIC_API_KEY", "HF_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    try:
+        brain.save_choices(provider=brain.OLLAMA, local_model="llama3.2:3b", local_vision=False)
+        prov = brain.make_provider()
+        assert isinstance(prov, brain.Ollama) and prov.model == "llama3.2:3b" and prov.lean
+    finally:
+        brain.save_choices(provider=brain.CLAUDE, local_model=brain.OLLAMA_DEFAULT, local_vision=False)
+
+
+def test_downloading_a_model_reports_progress():
+    lines = [b'{"status":"pulling manifest"}\n',
+             b'{"status":"pulling abc","digest":"abc","total":1000,"completed":250}\n',
+             b'{"status":"pulling abc","digest":"abc","total":1000,"completed":1000}\n',
+             b'{"status":"success"}\n']
+    seen = []
+    brain.ollama_pull("qwen3:4b", lambda f, s: seen.append((f, s)), open_stream=lambda: iter(lines))
+    assert seen[0] == (None, "pulling manifest") and (0.25, "pulling abc") in seen and seen[-1][1] == "success"
+    with pytest.raises(ApiError):
+        brain.ollama_pull("nope:1b", open_stream=lambda: iter([b'{"error":"pull model manifest: file does not exist"}']))
+
+
+def test_settings_find_download_and_choose_a_local_model(app, tmp_path, monkeypatch):
+    from pdfannotator.aupedia.panel import AupediaSettingsDialog
+
+    monkeypatch.setattr(brain, "KEY_FILE", tmp_path / "key.bin")
+    installed = [("qwen3:4b", 2.5)]
+    pulled = []
+
+    def pull(name, progress):
+        progress(0.5, "pulling")
+        progress(1.0, "pulling")
+        pulled.append(name)
+        installed.append((name, 2.0))
+
+    try:
+        dlg = AupediaSettingsDialog(True, local_fetch=lambda: list(installed),
+                                    local_caps=lambda m: {"completion", "tools", "vision"} if m == "qwen3:4b" else
+                                    {"completion", "tools"}, local_pull=pull)
+        dlg.use_local.setChecked(True)
+        assert dlg.local_box.isVisibleTo(dlg) and not dlg.hf_box.isVisibleTo(dlg)
+        assert wait(app, lambda: dlg.local_running is True)
+        assert "Running, with 1 model" in dlg.ollama_state.text() and not dlg.install_btn.isVisibleTo(dlg)
+        assert wait(app, lambda: dlg.local_vision.get("qwen3:4b") is True)
+        assert dlg.local_model.itemText(0).startswith("✓ qwen3:4b")
+        assert not dlg.pull_btn.isEnabled() and "see pictures" in dlg.local_note.text()
+        dlg.local_model.setCurrentIndex(dlg.local_model.findData("llama3.2:3b"))
+        assert dlg.pull_btn.isEnabled() and "Not downloaded yet" in dlg.local_note.text()
+        dlg.download_local()
+        assert wait(app, lambda: pulled == ["llama3.2:3b"] and dlg._is_installed("llama3.2:3b"))
+        assert wait(app, lambda: dlg.local_model_id() == "llama3.2:3b" and not dlg.pull_btn.isEnabled())
+        dlg.accept()
+        c = brain.choices()
+        assert c["provider"] == brain.OLLAMA and c["local_model"] == "llama3.2:3b"
+
+        def missing():
+            raise brain.OllamaNotRunning()
+
+        dlg = AupediaSettingsDialog(True, local_fetch=missing)
+        assert dlg.use_local.isChecked()                                       # it remembers the choice
+        assert wait(app, lambda: dlg.local_running is False)
+        assert "isn't installed" in dlg.ollama_state.text() and dlg.install_btn.isVisibleTo(dlg)
+        assert not dlg.pull_btn.isEnabled() and "Install Ollama" in dlg.local_note.text()
+    finally:
+        brain.save_choices(provider=brain.CLAUDE, local_model=brain.OLLAMA_DEFAULT, local_vision=False)

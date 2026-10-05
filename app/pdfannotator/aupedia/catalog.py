@@ -97,8 +97,11 @@ class Catalog:
     def get(self, cid):
         return self.by_id.get(str(cid).strip())
 
-    def describe(self):
-        """For Claude: one line per command (stable between questions, so it can be cached)."""
+    def describe(self, compact=False):
+        """For the AI: one line per command (stable between questions, so it can be cached). Compact: just
+        the id and where it is (for a small model on this computer)."""
+        if compact:
+            return "\n".join(f"{cmd.id}: {cmd.where()}" for cmd in self.commands)
         return "\n".join(cmd.line() for cmd in self.commands)
 
     def state(self, brief=False):
