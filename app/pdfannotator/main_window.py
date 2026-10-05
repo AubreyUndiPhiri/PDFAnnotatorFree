@@ -2046,11 +2046,8 @@ class MainWindow(QMainWindow):
         tab = self.current_tab()
         if not tab or not tab.document.is_open:
             return
-        dlg = SignaturePadDialog(self)
+        dlg = SignaturePadDialog(self, sign_on_phone=self.cloud.sign_on_phone)
         if dlg.exec() != SignaturePadDialog.Accepted:
-            return
-        if dlg.is_empty():
-            QMessageBox.information(self, "Empty Signature", "Please draw a signature first.")
             return
         path = dlg.save_to_temp_png()
         tab.start_image_stamp(path)

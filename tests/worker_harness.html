@@ -161,6 +161,40 @@ try {
   r = await call('GET', '/api/requests?status=signed', {token: owner});
   check('owner sees it was quick', (r.body.requests || []).some((x) => x.id === idq && x.quick === true), r.body);
 
+  // ---- signing on a phone: a link to your own inbox
+  r = await call('GET', '/m/abcdefghijklmnop1234');
+  check('phone page served', r.status === 200 && r.body.includes('Send to my computer'));
+  r = await call('POST', '/api/captures', {json: {key}});
+  check('phone link needs signing in', r.status === 401, r.body);
+  r = await call('POST', '/api/captures', {token: owner, json: {key: 'short'}});
+  check('phone link needs a proper key', r.status === 400 && r.body.error === 'bad-key', r.body);
+  r = await call('POST', '/api/captures', {token: owner, json: {key}});
+  const cid = r.body.id;
+  const phoneMail = mails[mails.length - 1];
+  check('phone link emailed to yourself only', r.status === 200 && /^[A-Za-z0-9]{24}$/.test(cid || '')
+        && phoneMail.to[0].email === 'owner@owner.example' && phoneMail.htmlContent.includes(`/m/${cid}#k=${key}`), r.body);
+  check('the phone key is not stored', db.exec(`SELECT COUNT(*) FROM captures WHERE data LIKE '%kkkk%'`)[0].values[0][0] === 0);
+  r = await call('GET', `/api/m/${cid}/info`);
+  check('phone sees it waiting', r.status === 200 && r.body.status === 'waiting', r.body);
+  r = await call('GET', `/api/captures/${cid}`, {token: member});
+  check("others can't see your phone signature", r.status === 404, r.body);
+  r = await call('GET', `/api/captures/${cid}`, {token: owner});
+  check('nothing yet', r.status === 200 && r.body.status === 'waiting' && !r.body.data, r.body);
+  r = await call('POST', `/api/m/${cid}/sign`, {text: 'not base64!'});
+  check('bad phone data refused', r.status === 400, r.body);
+  r = await call('POST', `/api/m/${cid}/sign`, {text: 'UEhPTkU='});
+  check('phone sends the signature', r.status === 200, r.body);
+  r = await call('POST', `/api/m/${cid}/sign`, {text: 'QUdBSU4='});
+  check('a phone link works once', r.status === 409, r.body);
+  r = await call('GET', `/api/captures/${cid}`, {token: owner});
+  check('AUPedean collects it', r.status === 200 && r.body.status === 'signed' && r.body.data === 'UEhPTkU=', r.body);
+  r = await call('POST', `/api/captures/${cid}/done`, {token: owner, json: {}});
+  check('then it is deleted', r.status === 200 && db.exec(`SELECT COUNT(*) FROM captures WHERE id = '${cid}'`)[0].values[0][0] === 0);
+  r = await call('POST', '/api/captures', {token: owner, json: {key}});
+  db.run('UPDATE captures SET expires = 1 WHERE id = ?', [r.body.id]);
+  r = await call('POST', `/api/m/${r.body.id}/sign`, {text: 'TEFURQ=='});
+  check('expired phone links stop working', r.status === 409 && r.body.error === 'expired', r.body);
+
   // ---- the daily email cap
   env.EMAILS_PER_DAY = String(mails.length);   // counting starts now: one more is allowed... then none
   r = await call('POST', '/api/login/code', {json: {email: 'friend@gmail.com'}});

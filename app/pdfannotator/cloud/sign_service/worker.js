@@ -16,11 +16,16 @@
 // A quick request (listed in quick_requests) skips the signer's code: the
 // emailed link alone opens it, for when ease matters more than proof.
 //
+// Signing on a phone (captures): someone without a pen tablet asks for a
+// link to their own inbox, opens it on their phone, draws their signature,
+// and it comes back (encrypted with the key in the link) to their AUPedean.
+//
 // Bindings: DB (D1), BREVO_KEY (secret), SENDER, SENDER_NAME, OWNER, ALLOW,
 // and optionally REQUESTS_PER_DAY (per person) and EMAILS_PER_DAY (the whole
 // service, to stay inside the Brevo plan; empty or 0 means no cap).
 
 const PAGE_HTML = __PAGE_HTML__;
+const CAPTURE_HTML = __CAPTURE_HTML__;
 const PDFLIB = __PDFLIB__;
 
 const VERSION = 1;
@@ -34,6 +39,11 @@ const REQUESTS_PER_DAY = 60;            // per person, unless env.REQUESTS_PER_D
 const SESSION_DAYS = 180;
 const SIGNER_TOKEN_MINUTES = 90;
 const DAY = 86400000;
+const CAPTURE_MINUTES = 30;             // a phone-signature link works this long
+const CAPTURES_PER_DAY = 20;            // per person
+const MAX_CAPTURE_CHARS = 600000;
+const CAPTURES_TABLE = 'CREATE TABLE IF NOT EXISTS captures (id TEXT PRIMARY KEY, owner TEXT NOT NULL, ' +
+                       'status TEXT, created INTEGER, expires INTEGER, data TEXT)';   // services installed before captures lack it
 
 export default {
   async fetch(request, env, ctx) {
@@ -64,8 +74,8 @@ async function route(req, env, ctx) {
     return new Response(PDFLIB, {headers: {'content-type': 'text/javascript; charset=utf-8',
                                            'cache-control': 'public, max-age=604800'}});
   }
-  if ((m = path.match(/^\/s\/([A-Za-z0-9]{16,40})$/)) && method === 'GET') {
-    return new Response(PAGE_HTML, {headers: {
+  if ((m = path.match(/^\/(s|m)\/([A-Za-z0-9]{16,40})$/)) && method === 'GET') {
+    return new Response(m[1] === 's' ? PAGE_HTML : CAPTURE_HTML, {headers: {
       'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer',
       'x-frame-options': 'DENY', 'x-content-type-options': 'nosniff'}});
   }
@@ -91,9 +101,10 @@ async function route(req, env, ctx) {
   }
 
   // ---- the requester's AUPedean (signed in)
-  if (path === '/api/me' || path.startsWith('/api/requests')) {
+  if (path === '/api/me' || path.startsWith('/api/requests') || path.startsWith('/api/captures')) {
     const user = await session(req, env);
     if (path === '/api/me') return json({ok: true, email: user});
+    if (path.startsWith('/api/captures')) return ownerCapture(req, env, user, url);
     if (path === '/api/requests' && method === 'POST') return createRequest(req, env, user);
     if (path === '/api/requests' && method === 'GET') return listRequests(env, user, url);
     if ((m = path.match(/^\/api\/requests\/([A-Za-z0-9]{16,40})(?:\/(doc|send|result|done|cancel))?$/))) {
@@ -107,6 +118,24 @@ async function route(req, env, ctx) {
       if (action === 'cancel' && method === 'POST') return finish(env, r, 'cancelled');
     }
     fail(404, 'not-found');
+  }
+
+  // ---- the phone (from the link emailed to the person themselves)
+  if ((m = path.match(/^\/api\/m\/([A-Za-z0-9]{16,40})\/(info|sign)$/))) {
+    await env.DB.prepare(CAPTURES_TABLE).run();
+    const c = await env.DB.prepare('SELECT * FROM captures WHERE id = ?').bind(m[1]).first();
+    if (!c) fail(404, 'not-found');
+    const status = c.status === 'waiting' && Date.now() > c.expires ? 'expired' : c.status;
+    if (m[2] === 'info' && method === 'GET') return json({ok: true, status: status});
+    if (m[2] === 'sign' && method === 'POST') {
+      if (status !== 'waiting') fail(409, status === 'expired' ? 'expired' : 'already-signed');
+      const data = await req.text();
+      if (!data || data.length > MAX_CAPTURE_CHARS || !/^[A-Za-z0-9+/=]+$/.test(data)) fail(400, 'bad-signature');
+      const done = await env.DB.prepare("UPDATE captures SET status = 'signed', data = ? WHERE id = ? AND status = 'waiting'")
+        .bind(data, c.id).run();
+      if (!done.meta || !done.meta.changes) fail(409, 'already-signed');
+      return json({ok: true});
+    }
   }
 
   // ---- the signer (from the emailed link)
@@ -286,6 +315,49 @@ async function tidy(env) {
     env.DB.prepare('DELETE FROM signer_tokens WHERE expires < ?').bind(now),
     env.DB.prepare('DELETE FROM sessions WHERE expires < ?').bind(now),
   ]);
+}
+
+// ------------------------------------------------------------------------
+// signing on a phone: the link goes to the signed-in person's own inbox
+
+async function ownerCapture(req, env, user, url) {
+  await env.DB.prepare(CAPTURES_TABLE).run();
+  const method = req.method;
+  if (url.pathname === '/api/captures' && method === 'POST') {
+    const body = await readJson(req);
+    const key = String(body.key || '');
+    if (!/^[A-Za-z0-9_-]{40,50}$/.test(key)) fail(400, 'bad-key');   // only in the email, never stored
+    const now = Date.now();
+    await env.DB.prepare("DELETE FROM captures WHERE expires < ?").bind(now - DAY).run();
+    const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM captures WHERE owner = ? AND created > ?')
+      .bind(user, now - DAY).first();
+    if (count && count.n >= CAPTURES_PER_DAY) fail(429, 'daily-limit');
+    const id = randomToken(18).replace(/[^A-Za-z0-9]/g, '').slice(0, 24).padEnd(24, 'x');
+    await env.DB.prepare("INSERT INTO captures (id, owner, status, created, expires) VALUES (?, ?, 'waiting', ?, ?)")
+      .bind(id, user, now, now + CAPTURE_MINUTES * 60000).run();
+    const link = `${url.origin}/m/${id}#k=${key}`;
+    await mail(env, user, 'Draw your signature on your phone',
+      `Open this email on your phone (or tablet) and tap the button to draw your signature with your finger.<br><br>` +
+      `<a href="${link}" style="display:inline-block;padding:12px 22px;border-radius:999px;background:#5a51ea;` +
+      `color:#fff;text-decoration:none;font-weight:600">Draw my signature</a><br><br>` +
+      `<span style="color:#5d6781;font-size:13px">It goes straight to AUPedean Annotator on your computer. ` +
+      `The link works for ${CAPTURE_MINUTES} minutes. If you didn't ask for it, ignore this email.</span>`,
+      `Open this email on your phone and draw your signature: ${link}\n\nThe link works for ${CAPTURE_MINUTES} minutes.`);
+    return json({ok: true, id: id, expires: now + CAPTURE_MINUTES * 60000});
+  }
+  const m = url.pathname.match(/^\/api\/captures\/([A-Za-z0-9]{16,40})(?:\/(done))?$/);
+  if (!m) fail(404, 'not-found');
+  const c = await env.DB.prepare('SELECT * FROM captures WHERE id = ?').bind(m[1]).first();
+  if (!c || c.owner !== user) fail(404, 'not-found');
+  if (!m[2] && method === 'GET') {
+    const status = c.status === 'waiting' && Date.now() > c.expires ? 'expired' : c.status;
+    return json({ok: true, status: status, data: status === 'signed' ? c.data : undefined});
+  }
+  if (m[2] === 'done' && method === 'POST') {
+    await env.DB.prepare('DELETE FROM captures WHERE id = ?').bind(c.id).run();
+    return json({ok: true});
+  }
+  fail(404, 'not-found');
 }
 
 // ------------------------------------------------------------------------

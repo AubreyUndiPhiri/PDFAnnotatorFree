@@ -4,12 +4,12 @@ import tempfile
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QWidget, QLabel,
     QFormLayout, QLineEdit, QTableWidget, QTableWidgetItem, QDoubleSpinBox,
-    QSpinBox, QHeaderView, QComboBox, QColorDialog, QToolButton, QFileDialog, QMessageBox,
+    QSpinBox, QHeaderView, QComboBox, QColorDialog, QToolButton, QFileDialog, QMessageBox, QCheckBox,
 )
 from PySide6.QtGui import QImage, QPainter, QPen, QColor, QIcon, QPixmap, QShortcut, QKeySequence
-from PySide6.QtCore import Qt, Signal, QSize, QRectF
+from PySide6.QtCore import Qt, Signal, QSize, QSizeF, QRectF, QBuffer, QIODevice
 
-from . import fonts, icons, theme
+from . import fonts, icons, signature_library, theme
 
 def swatch_icon(color, size=36) -> QIcon:
     pix = QPixmap(size, size)
@@ -77,31 +77,71 @@ def _dialog_layout(dialog):
 # ---------------------------------------------------------------------------
 
 class SignatureCanvas(QWidget):
+    """Draw a signature, or show one picked from My Signatures or sent from a
+    phone (`picture`, kept at full size). Drawing on a picture starts afresh."""
+    edited = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(520, 200)
         self.setCursor(Qt.CrossCursor)
         self.image = QImage(self.size(), QImage.Format_ARGB32)
         self.image.fill(Qt.transparent)
+        self.picture = None
         self._last_point = None
 
     def clear(self):
         self.image.fill(Qt.transparent)
+        self.picture = None
+        self.update()
+
+    def set_picture(self, image: QImage):
+        self.image.fill(Qt.transparent)
+        self.picture = image
         self.update()
 
     def has_ink(self) -> bool:
+        if self.picture is not None and not self.picture.isNull():
+            return True
         for y in range(0, self.image.height(), 4):
             for x in range(0, self.image.width(), 4):
                 if self.image.pixelColor(x, y).alpha() > 0:
                     return True
         return False
 
+    def signature_image(self) -> QImage:
+        """The picture, or what was drawn cut to the ink (plus a small margin)."""
+        if self.picture is not None:
+            return self.picture
+        img = self.image
+        x0, y0, x1, y1 = img.width(), img.height(), -1, -1
+        for y in range(img.height()):
+            for x in range(img.width()):
+                if img.pixelColor(x, y).alpha() > 10:
+                    x0, x1 = min(x0, x), max(x1, x)
+                    y0, y1 = min(y0, y), max(y1, y)
+        if x1 < 0:
+            return img
+        m = 6
+        x0, y0 = max(0, x0 - m), max(0, y0 - m)
+        x1, y1 = min(img.width() - 1, x1 + m), min(img.height() - 1, y1 + m)
+        return img.copy(x0, y0, x1 - x0 + 1, y1 - y0 + 1)
+
+    def png_bytes(self) -> bytes:
+        buf = QBuffer()
+        buf.open(QIODevice.WriteOnly)
+        self.signature_image().save(buf, "PNG")
+        return bytes(buf.data())
+
     def _pos(self, event):
         return event.position().toPoint() if hasattr(event, "position") else event.pos()
 
     def mousePressEvent(self, event):
         if event.buttons() & Qt.LeftButton:
+            if self.picture is not None:
+                self.clear()
             self._last_point = self._pos(event)
+            self.edited.emit()
 
     def mouseMoveEvent(self, event):
         if self._last_point is None or not (event.buttons() & Qt.LeftButton):
@@ -122,6 +162,7 @@ class SignatureCanvas(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
         painter.setPen(QColor(theme.BORDER_STRONG))
         painter.setBrush(QColor(theme.SURFACE))
         painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
@@ -131,32 +172,167 @@ class SignatureCanvas(QWidget):
         painter.drawLine(32, baseline, self.width() - 32, baseline)
         painter.setPen(QColor(theme.ICON_DISABLED))
         painter.drawText(32, baseline + 22, "Sign above the line")
+        if self.picture is not None and not self.picture.isNull():
+            box = QRectF(self.rect()).adjusted(24, 12, -24, -44)
+            size = QSizeF(self.picture.size()).scaled(box.size(), Qt.KeepAspectRatio)
+            if size.width() > self.picture.width():      # small pictures aren't blown up
+                size = QSizeF(self.picture.size())
+            target = QRectF(box.center().x() - size.width() / 2, box.bottom() - size.height(),
+                            size.width(), size.height())
+            painter.drawImage(target, self.picture)
         painter.drawImage(0, 0, self.image)
 
 
 class SignaturePadDialog(QDialog):
-    def __init__(self, parent=None):
+    """Draw a signature, pick one of My Signatures (up to
+    signature_library.MAX_SIGNATURES), or draw it on a phone: `sign_on_phone`
+    (when given) emails a link and returns the PNG bytes drawn there, or None."""
+
+    THUMB = QSize(132, 52)
+
+    def __init__(self, parent=None, sign_on_phone=None):
         super().__init__(parent)
         self.setWindowTitle("Draw Signature")
+        self.sign_on_phone = sign_on_phone
+        self.picked = None          # the saved signature shown, if one was picked
         layout = _dialog_layout(self)
-        layout.addLayout(_header("Draw your signature", "Use your mouse, pen or touchpad. You'll place it on the page next."))
+        layout.addLayout(_header("Draw your signature", "Use your mouse, pen or touchpad, or sign on your phone. "
+                                                        "You'll place it on the page next."))
+
+        self.library_label = QLabel()
+        self.library_label.setObjectName("muted")
+        self.library_label.setWordWrap(True)
+        layout.addWidget(self.library_label)
+        self.library_row = QHBoxLayout()
+        self.library_row.setSpacing(8)
+        layout.addLayout(self.library_row)
+
         self.canvas = SignatureCanvas(self)
+        self.canvas.edited.connect(self._drawn)
         layout.addWidget(self.canvas)
+
+        self.save_box = QCheckBox()
+        self.save_box.setMaximumWidth(self.canvas.width())
+        layout.addWidget(self.save_box)
+
         clear_btn = QPushButton(icons.icon("rotate-left"), "Clear")
-        clear_btn.clicked.connect(self.canvas.clear)
+        clear_btn.clicked.connect(self._clear)
+        leading = [clear_btn]
+        self.phone_btn = None
+        if sign_on_phone is not None:
+            self.phone_btn = QPushButton(icons.icon("mail"), "Sign on My Phone...")
+            self.phone_btn.setToolTip("No pen tablet? Email yourself a link, open it on your phone, sign with your "
+                                      "finger, and the signature comes back here.")
+            self.phone_btn.clicked.connect(self._phone)
+            leading.append(self.phone_btn)
         cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
         ok_btn = _primary("Use Signature")
         ok_btn.clicked.connect(self.accept)
-        layout.addLayout(_button_row(cancel_btn, ok_btn, leading=[clear_btn]))
+        layout.addLayout(_button_row(cancel_btn, ok_btn, leading=leading))
+        self._fill_library()
+
+    # ---- My Signatures
+    def _fill_library(self):
+        while self.library_row.count():
+            item = self.library_row.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)     # gone now, not after the next event loop pass
+        saved = signature_library.signatures()
+        self.tiles = [self._tile(path) for path in saved]
+        for tile in self.tiles:
+            self.library_row.addWidget(tile)
+        self.library_row.addStretch()
+        count, most = len(saved), signature_library.MAX_SIGNATURES
+        self.library_label.setText(f"My Signatures ({count} of {most}): click one to use it, or draw a new one below."
+                                   if count else f"My Signatures: none yet. You can keep up to {most} to use again.")
+        self._update_save_box()
+
+    def _tile(self, path):
+        btn = QToolButton()
+        btn.setIcon(QIcon(QPixmap(str(path))))
+        btn.setIconSize(self.THUMB)
+        btn.setFixedSize(self.THUMB + QSize(14, 14))
+        btn.setCheckable(True)
+        btn.setChecked(self.picked == path)
+        btn.setToolTip("Use this signature. Right-click to remove it.")
+        btn.clicked.connect(lambda _checked=False, p=path: self.pick(p))
+        btn.setContextMenuPolicy(Qt.CustomContextMenu)
+        btn.customContextMenuRequested.connect(lambda _pos, p=path: self._remove(p))
+        return btn
+
+    def pick(self, path):
+        image = QImage(str(path))
+        if image.isNull():
+            return
+        self.picked = path
+        self.canvas.set_picture(image)
+        self._fill_library()
+
+    def _remove(self, path):
+        if QMessageBox.question(self, "Remove Signature",
+                                "Remove this signature from My Signatures?") != QMessageBox.Yes:
+            return
+        signature_library.remove(path)
+        if self.picked == path:
+            self._clear()
+        self._fill_library()
+
+    def _update_save_box(self):
+        if self.picked is not None:
+            self.save_box.setText("Saved in My Signatures")
+            self.save_box.setChecked(True)
+            self.save_box.setEnabled(False)
+        elif signature_library.is_full():
+            self.save_box.setText(f"My Signatures is full ({signature_library.MAX_SIGNATURES} of "
+                                  f"{signature_library.MAX_SIGNATURES}): right-click one to remove it and save this one")
+            self.save_box.setChecked(False)
+            self.save_box.setEnabled(False)
+        else:
+            self.save_box.setText("Save to My Signatures to use again")
+            self.save_box.setEnabled(True)
+
+    def _drawn(self):
+        if self.picked is not None:
+            self.picked = None
+            self._fill_library()
+
+    def _clear(self):
+        self.canvas.clear()
+        self._drawn()
+
+    # ---- signing on a phone
+    def _phone(self):
+        self.use_phone_signature(self.sign_on_phone(self))
+
+    def use_phone_signature(self, png):
+        image = QImage.fromData(png or b"", "PNG")
+        if image.isNull():
+            return
+        self.picked = None
+        self.canvas.set_picture(image)
+        self._fill_library()
+        if self.save_box.isEnabled():
+            self.save_box.setChecked(True)     # drawn on a phone: worth keeping
+
+    def accept(self):
+        if self.is_empty():
+            QMessageBox.information(self, "Empty Signature", "Please draw a signature first.")
+            return
+        if self.picked is None and self.save_box.isEnabled() and self.save_box.isChecked():
+            try:
+                signature_library.add(self.canvas.png_bytes())
+            except (signature_library.LibraryFull, OSError) as exc:
+                QMessageBox.warning(self, "My Signatures", f"The signature wasn't saved: {exc}")
+        super().accept()
 
     def is_empty(self) -> bool:
         return not self.canvas.has_ink()
 
     def save_to_temp_png(self) -> str:
         fd, path = tempfile.mkstemp(suffix=".png", prefix="signature_")
-        os.close(fd)
-        self.canvas.image.save(path, "PNG")
+        with os.fdopen(fd, "wb") as f:
+            f.write(self.canvas.png_bytes())
         return path
 
 

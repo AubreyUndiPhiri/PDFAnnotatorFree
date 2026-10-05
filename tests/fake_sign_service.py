@@ -12,6 +12,7 @@ from pathlib import Path
 
 APP = Path(__file__).resolve().parents[1] / "app"
 PAGE = APP / "pdfannotator" / "cloud" / "sign_service" / "page.html"
+CAPTURE = PAGE.with_name("capture.html")
 PDFLIB = APP / "assets" / "js" / "pdf-lib.min.js"
 CODE = "424242"
 
@@ -19,7 +20,7 @@ CODE = "424242"
 class FakeSignService:
     def __init__(self, allow=("@example.com",)):
         self.allow = allow
-        self.mails, self.sessions, self.signer_tokens, self.requests = [], {}, {}, {}
+        self.mails, self.sessions, self.signer_tokens, self.requests, self.captures = [], {}, {}, {}, {}
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -30,6 +31,10 @@ class FakeSignService:
 
     def link_for(self, signer):
         mail = next(m for m in reversed(self.mails) if m["to"] == signer and "/s/" in m["html"])
+        return re.search(r'href="([^"]+)"', mail["html"]).group(1)
+
+    def phone_link_for(self, email):
+        mail = next(m for m in reversed(self.mails) if m["to"] == email and "/m/" in m["html"])
         return re.search(r'href="([^"]+)"', mail["html"]).group(1)
 
     def _handler(self):
@@ -75,6 +80,19 @@ class FakeSignService:
                     return self._send(200, {"ok": True, "service": "aupedean-sign", "version": 1})
                 if re.fullmatch(r"/s/[A-Za-z0-9]{16,40}", path):
                     return self._send(200, PAGE.read_text(encoding="utf-8"), "text/html")
+                if re.fullmatch(r"/m/[A-Za-z0-9]{16,40}", path):
+                    return self._send(200, CAPTURE.read_text(encoding="utf-8"), "text/html")
+                m = re.fullmatch(r"/api/m/([A-Za-z0-9]{16,40})/(info|sign)", path)
+                if m:
+                    c = fake.captures.get(m.group(1))
+                    if c is None:
+                        return self._err(404, "not-found")
+                    if m.group(2) == "info":
+                        return self._send(200, {"ok": True, "status": c["status"]})
+                    if c["status"] != "waiting":
+                        return self._err(409, "already-signed")
+                    c.update(status="signed", data=body)
+                    return self._send(200, {"ok": True})
                 if path == "/pdf-lib.js":
                     return self._send(200, PDFLIB.read_text(encoding="utf-8"), "text/javascript")
                 if path == "/api/login/code":
@@ -90,7 +108,7 @@ class FakeSignService:
                     token = secrets.token_urlsafe(24)
                     fake.sessions[token] = data["email"].lower()
                     return self._send(200, {"ok": True, "token": token, "email": data["email"].lower()})
-                if path == "/api/me" or path.startswith("/api/requests"):
+                if path == "/api/me" or path.startswith(("/api/requests", "/api/captures")):
                     user = fake.sessions.get(self._bearer())
                     if not user:
                         return self._err(401, "signed-out")
@@ -103,6 +121,21 @@ class FakeSignService:
             def _owner(self, method, path, q, body, user):
                 if path == "/api/me":
                     return self._send(200, {"ok": True, "email": user})
+                if path == "/api/captures" and method == "POST":
+                    cid = secrets.token_hex(12)
+                    fake.captures[cid] = {"owner": user, "status": "waiting"}
+                    link = f"{fake.base}/m/{cid}#k={json.loads(body)['key']}"
+                    fake.mails.append({"to": user, "subject": "Draw your signature", "html": f'<a href="{link}">'})
+                    return self._send(200, {"ok": True, "id": cid})
+                m = re.fullmatch(r"/api/captures/([0-9a-f]{24})(/done)?", path)
+                if m:
+                    c = fake.captures.get(m.group(1))
+                    if c is None or c["owner"] != user:
+                        return self._err(404, "not-found")
+                    if m.group(2):
+                        del fake.captures[m.group(1)]
+                        return self._send(200, {"ok": True})
+                    return self._send(200, {"ok": True, "status": c["status"], "data": c.get("data")})
                 if path == "/api/requests" and method == "POST":
                     data = json.loads(body)
                     rid = secrets.token_hex(12)

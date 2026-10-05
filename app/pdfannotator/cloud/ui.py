@@ -1007,6 +1007,103 @@ HOSTED_REQUESTS_PER_DAY = 10    # per person, when the service is open to anyone
 HOSTED_EMAILS_PER_DAY = 280      # the whole service: inside Brevo's free 300 a day
 
 
+class PhoneSignatureDialog(QDialog):
+    """Emails the signed-in person a link to draw their signature on their
+    phone, then waits for it: `png` holds it once it has come back."""
+    POLL_MS = 3000
+
+    def __init__(self, client, email, parent=None):
+        super().__init__(parent)
+        self.client, self.email = client, email
+        self.capture = None          # (id, key) of the link that's out
+        self.png = None
+        self._busy = False
+        self._closed = False
+        self.setWindowTitle("Sign on My Phone")
+        self.setMinimumWidth(480)
+        layout = _dialog_layout(self)
+        layout.addLayout(_header("Sign on your phone",
+                                 "No pen tablet? Sign with your finger on your phone instead."))
+        self.status = _muted("Emailing you a link...")
+        layout.addWidget(self.status)
+        layout.addWidget(_muted("1. Open the email from AUPedean Sign on your phone.\n"
+                                "2. Tap Draw my signature, and sign with your finger.\n"
+                                "3. Tap Send to my computer. The signature shows up here by itself."))
+        self.again_btn = QPushButton(icons.icon("mail"), "Send Again")
+        self.again_btn.setToolTip("Email a new link (the old one stops working)")
+        self.again_btn.clicked.connect(self._start)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        layout.addLayout(_button_row(cancel, leading=[self.again_btn]))
+        self.timer = QTimer(self)
+        self.timer.setInterval(self.POLL_MS)
+        self.timer.timeout.connect(self._poll)
+        QTimer.singleShot(0, self._start)
+
+    def _start(self):
+        self._forget()
+        self.again_btn.setEnabled(False)
+        self.status.setText("Emailing you a link...")
+
+        def done(capture):
+            if self._closed:
+                worker.run(lambda: self.client.capture_done(capture[0]))
+                return
+            self.capture = capture
+            self.again_btn.setEnabled(True)
+            self.status.setText(f"We emailed a link to <b>{self.email}</b>. Waiting for your signature "
+                                "(the link works for 30 minutes)...")
+            self.timer.start()
+
+        worker.run(lambda: sign_service.start_phone_signature(self.client), done, self._failed)
+
+    def _poll(self):
+        if self._busy or self.capture is None:
+            return
+        self._busy = True
+        capture = self.capture
+
+        def done(png):
+            self._busy = False
+            if png and capture == self.capture:
+                self.png = png
+                self.accept()
+
+        def failed(exc):
+            self._busy = False
+            if capture == self.capture:
+                self._failed(exc)
+
+        worker.run(lambda: sign_service.phone_signature(self.client, *capture), done, failed)
+
+    def _failed(self, exc):
+        self.timer.stop()
+        self.again_btn.setEnabled(True)
+        if isinstance(exc, sign_service.ServiceError):
+            if exc.code == "signed-out":
+                sign_service.sign_out()
+            text = str(exc)
+            if exc.code == "not-found":
+                text = ("This signature service is older than signing on a phone. Whoever set it up can update it: "
+                        "Signature Service Setup, then Install again.")
+        else:
+            text = friendly(exc)
+        self.status.setText(text)
+
+    def _forget(self):
+        """The link that's out stops working, and the service forgets it."""
+        self.timer.stop()
+        if self.capture is not None:
+            capture_id, client = self.capture[0], self.client
+            self.capture = None
+            worker.run(lambda: client.capture_done(capture_id))
+
+    def done(self, result):
+        self._closed = True
+        self._forget()
+        super().done(result)
+
+
 class ServiceSetupDialog(QDialog):
     """One time, by whoever runs the service: install it in their free
     Cloudflare account, sending email through their free Brevo account."""
@@ -1654,6 +1751,16 @@ class CloudController(QObject):
             self.show_sign_account()
             client = sign_service.current_client()
         return client
+
+    def sign_on_phone(self, parent=None):
+        """Your own signature, drawn on your phone: PNG bytes, or None."""
+        client = self._signed_in_client()
+        if client is None:
+            return None
+        email = (sign_service.load_session() or {}).get("email", "")
+        dlg = PhoneSignatureDialog(client, email, parent or self.window)
+        dlg.exec()
+        return dlg.png
 
     def request_signature_quick(self):
         """The easiest way: the client's email, Send; the signature comes back by itself."""

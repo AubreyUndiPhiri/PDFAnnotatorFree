@@ -140,6 +140,12 @@ Single-letter shortcuts are shown in brackets.
 - **Laser Pointer** (O) / **Pointer** (V): presentation aids that never
   change the PDF.
 - **Insert Image / Draw Signature**: place a logo or a hand-drawn signature.
+  *My Signatures* keeps up to 5 signatures to use again (tick *Save to My
+  Signatures*; right-click one to remove it). No pen tablet? **Sign on My
+  Phone...** emails you a link: open it on your phone, sign with your finger,
+  tap *Send to my computer*, and the signature appears in the dialog (needs
+  the signature service below; the link works for 30 minutes and the
+  signature travels encrypted).
 - Right-click any tool button to pin it under **Tools > Favorites**.
   **Tools > Tool Styles** edits every tool's default colour, width, opacity,
   font and font size in one table.
@@ -210,7 +216,9 @@ requests a day). No card is needed for either.
   address to anyone else who uses it. Copying it into
   `app/assets/sign_service.json` as `{"url": "..."}` builds it into the exe.
   The code is in `app/pdfannotator/cloud/sign_service/` (`worker.js`,
-  `page.html`).
+  `page.html`, and `capture.html` for signing on a phone). A service
+  installed before Sign on My Phone existed needs **Install** run again to
+  get it.
 
 Without a service there's also the **signing file**: Request Signature >
 Make a Signing File. AUPedean makes one web page with the document in it

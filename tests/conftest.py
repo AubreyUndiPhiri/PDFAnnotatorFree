@@ -14,3 +14,6 @@ os.environ["AUPEDEAN_GOOGLE_DIR"] = tempfile.mkdtemp(prefix="aupedean-test-googl
 
 # ...and the signature service session
 os.environ["AUPEDEAN_SIGN_DIR"] = tempfile.mkdtemp(prefix="aupedean-test-sign-")
+
+# ...and My Signatures
+os.environ["AUPEDEAN_SIGNATURES_DIR"] = tempfile.mkdtemp(prefix="aupedean-test-signatures-")

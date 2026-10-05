@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS blobs (request_id TEXT NOT NULL, kind TEXT NOT NULL, 
 CREATE TABLE IF NOT EXISTS signer_tokens (token_hash TEXT PRIMARY KEY, request_id TEXT, expires INTEGER);
 CREATE TABLE IF NOT EXISTS mail_count (day TEXT PRIMARY KEY, n INTEGER);
 CREATE TABLE IF NOT EXISTS quick_requests (id TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS captures (id TEXT PRIMARY KEY, owner TEXT NOT NULL, status TEXT, created INTEGER,
+  expires INTEGER, data TEXT);
 """
 
 FRIENDLY = {
@@ -234,6 +236,16 @@ class SignService:
     def cancel(self, request_id):
         self._call("POST", f"/api/requests/{request_id}/cancel", {})
 
+    # signing on a phone: a link to your own inbox; what you draw there comes back here
+    def capture_start(self, key):
+        return self._call("POST", "/api/captures", {"key": key_text(key)})["id"]
+
+    def capture_status(self, capture_id):
+        return self._call("GET", f"/api/captures/{capture_id}")
+
+    def capture_done(self, capture_id):
+        self._call("POST", f"/api/captures/{capture_id}/done", {})
+
 
 def current_client():
     """A signed-in SignService, or None."""
@@ -265,6 +277,25 @@ def send_request(client, pdf_bytes, title, doc_path, page_index, rect, signer_em
         id=request_id, token=key_text(key), title=title, signer_email=signer_email.lower(), signer_name=signer_name,
         message=message, page=page_index, rect=list(fitz.Rect(rect)), field=doc["field"], folder_id=client.url,
         doc_path=doc_path, created=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), kind="service")
+
+
+def start_phone_signature(client):
+    """Email the signed-in person a link to draw their signature on their
+    phone. Returns (capture id, key); the key is only in the emailed link."""
+    key = new_key()
+    return client.capture_start(key), key
+
+
+def phone_signature(client, capture_id, key):
+    """The signature's PNG bytes once it was drawn on the phone, else None.
+    Raises ServiceError("expired") when the link ran out."""
+    reply = client.capture_status(capture_id)
+    if reply.get("status") == "expired":
+        raise ServiceError("expired", "The link expired before a signature came back. Send yourself a new one.")
+    if reply.get("status") != "signed" or not reply.get("data"):
+        return None
+    result = json.loads(unseal(key, reply["data"]))
+    return base64.b64decode(result["signature_png"])
 
 
 def collect(client, req, info):
@@ -322,7 +353,9 @@ def _multipart(fields):
 def worker_source():
     source = (SOURCE_DIR / "worker.js").read_text(encoding="utf-8")
     page = (SOURCE_DIR / "page.html").read_text(encoding="utf-8")
+    capture = (SOURCE_DIR / "capture.html").read_text(encoding="utf-8")
     return (source.replace("__PAGE_HTML__", json.dumps(page))
+                  .replace("__CAPTURE_HTML__", json.dumps(capture))
                   .replace("__PDFLIB__", json.dumps(PDFLIB.read_text(encoding="utf-8"))))
 
 
