@@ -20,7 +20,8 @@ R = 24                 # body radius, before SCALE
 SCALE = 1.2            # how big it's drawn
 SIZE = 180             # the widget: room for squash, the tail and the thinking dots
 CENTER = (SIZE / 2, SIZE / 2 + 4)
-REACH = (R + 30) * SCALE   # from the body's centre to the nib
+REACH = (R + 38) * SCALE   # from the body's centre to the tip of the nib
+PEN_ANGLE = math.radians(128)  # holding the pen: the body up and to the right of the nib, like a hand
 
 
 def ink_color():
@@ -106,6 +107,8 @@ class Mascot(QWidget):
         self.next_trick = self.t + 9.0
         self.trick = None
         self.on_land = None
+        self.pen = False              # holding the pen: the nib stays put relative to the body
+        self.tracing = None           # following a path with the nib (drawing, writing)
 
     # ---- where it is
     def place(self, x, y):
@@ -113,9 +116,13 @@ class Mascot(QWidget):
         self._sync_geometry()
 
     def nib_pos(self):
-        """The tip of the pen, in the parent's coordinates (it draws the trail)."""
-        a = self.tail_angle
-        return (self.pos_f[0] + math.cos(a) * REACH, self.pos_f[1] + self._bob() + math.sin(a) * REACH)
+        """The tip of the pen, in the parent's coordinates (it draws the trail, and the ink)."""
+        tip = self._tail_geometry(self.tail_angle, self._sway())[-1]
+        return (self.pos_f[0] + tip[0] * SCALE, self.pos_f[1] + self._bob() + tip[1] * SCALE)
+
+    def _nib_offset(self):
+        tip = self._tail_geometry(PEN_ANGLE, 0.0)[-1]
+        return tip[0] * SCALE, tip[1] * SCALE
 
     def _sync_geometry(self):
         x = self.pos_f[0] - CENTER[0]
@@ -124,8 +131,9 @@ class Mascot(QWidget):
         self.move(int(math.floor(x)), int(math.floor(y)))
 
     # ---- moving
-    def fly_to(self, x, y, on_done=None):
-        """An arc there: squash, leap, stretch along the way, wobble on landing."""
+    def fly_to(self, x, y, on_done=None, quick=False):
+        """An arc there: squash, leap, stretch along the way, wobble on landing. Quick: a low, fast hop
+        with no wind-up (lifting the pen between strokes)."""
         x0, y0 = self.pos_f
         dist = math.hypot(x - x0, y - y0)
         if dist < 3:
@@ -133,25 +141,83 @@ class Mascot(QWidget):
             if on_done:
                 QTimer.singleShot(0, on_done)
             return
-        lift = min(140.0, 30 + dist * 0.28)
+        if quick:
+            lift = min(40.0, 6 + dist * 0.18)
+            dur = anim.clamp(0.1 + dist / 2600, 0.1, 0.4)
+        else:
+            lift = min(140.0, 30 + dist * 0.28)
+            dur = anim.clamp(0.42 + dist / 1500, 0.45, 1.05)
         side = -1 if x >= x0 else 1                       # bow upwards, the way a thrown thing goes
         nx, ny = (y - y0) / dist * side, -(x - x0) / dist * side
         if ny > 0:
             nx, ny = -nx, -ny
         p1 = (x0 + (x - x0) * 0.25 + nx * lift, y0 + (y - y0) * 0.25 + ny * lift)
         p2 = (x0 + (x - x0) * 0.75 + nx * lift * 0.8, y0 + (y - y0) * 0.75 + ny * lift * 0.8)
-        dur = anim.clamp(0.42 + dist / 1500, 0.45, 1.05)
         flight = {"p": ((x0, y0), p1, p2, (x, y)), "dur": dur, "start": None}
         self.on_land = on_done
         self.flight = None
-        self.anticipate = (self.t, flight)
+        if quick:
+            flight["start"] = self.t
+            self.flight, self.anticipate = flight, None
+        else:
+            self.anticipate = (self.t, flight)
 
     def stop(self):
-        self.flight = self.anticipate = None
+        self.flight = self.anticipate = self.tracing = None
         self.on_land = None
 
     def is_busy(self):
-        return self.flight is not None or self.anticipate is not None
+        return self.flight is not None or self.anticipate is not None or self.tracing is not None
+
+    def hold_pen(self, holding):
+        self.pen = holding
+        if holding:
+            self.tail_angle = PEN_ANGLE
+
+    def fly_nib_to(self, x, y, on_done=None, quick=False):
+        """Fly so the tip of the pen lands on (x, y)."""
+        ox, oy = self._nib_offset()
+        self.fly_to(x - ox, y - oy, on_done, quick)
+
+    def trace(self, points, speed, on_done=None):
+        """Move the tip of the pen along `points` (parent coordinates) at `speed` pixels a second."""
+        pts = [(float(x), float(y)) for x, y in points]
+        cum = [0.0]
+        for a, b in zip(pts, pts[1:]):
+            cum.append(cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
+        ox, oy = self._nib_offset()
+        self.pos_f = (pts[0][0] - ox, pts[0][1] - oy)
+        self.tracing = {"pts": pts, "cum": cum, "start": self.t, "speed": max(1.0, speed), "done": on_done, "u": 0.0}
+
+    def trace_progress(self):
+        return self.tracing["u"] if self.tracing else 1.0
+
+    def _step_trace(self, t, dt):
+        tr = self.tracing
+        pts, cum = tr["pts"], tr["cum"]
+        d = (t - tr["start"]) * tr["speed"]
+        total = cum[-1]
+        if d >= total or total <= 0:
+            x, y = pts[-1]
+            finished = True
+        else:
+            i = max(1, next(k for k in range(1, len(cum)) if cum[k] >= d))
+            seg = cum[i] - cum[i - 1] or 1.0
+            u = (d - cum[i - 1]) / seg
+            x = pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * u
+            y = pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * u
+            finished = False
+        tr["u"] = 1.0 if finished else d / total
+        ox, oy = self._nib_offset()
+        old = self.pos_f
+        self.pos_f = (x - ox, y - oy)
+        if dt > 0:
+            self.vel = ((self.pos_f[0] - old[0]) / dt, (self.pos_f[1] - old[1]) / dt)
+        if finished:
+            self.tracing = None
+            self.vel = (0.0, 0.0)
+            if tr["done"]:
+                QTimer.singleShot(0, tr["done"])
 
     def squash(self):
         self.squash_at = self.t
@@ -169,7 +235,9 @@ class Mascot(QWidget):
                 self.anticipate = None
                 flight["start"] = t
                 self.flight = flight
-        if self.flight is not None:
+        if self.tracing is not None:
+            self._step_trace(t, dt)
+        elif self.flight is not None:
             f = self.flight
             u = (t - f["start"]) / f["dur"]
             old = self.pos_f
@@ -200,6 +268,9 @@ class Mascot(QWidget):
         self.update()
 
     def _steer_tail(self, dt):
+        if self.pen:
+            self.tail_angle = PEN_ANGLE
+            return
         speed = math.hypot(*self.vel)
         if speed > 60:
             want = math.atan2(self.vel[1], self.vel[0]) + math.pi          # streams out behind
@@ -251,12 +322,14 @@ class Mascot(QWidget):
 
         p.translate(cx, cy + bob)
         p.scale(SCALE, SCALE)
-        speed = math.hypot(*self.vel)
-        tilt = 4 * math.sin(t * 1.3) if speed < 60 else max(-14, min(14, self.vel[0] / 90))
+        speed = 0.0 if self.pen else math.hypot(*self.vel)      # holding the pen: steady, so the nib is exact
+        tilt = 0.0 if self.pen else 4 * math.sin(t * 1.3) if speed < 60 else max(-14, min(14, self.vel[0] / 90))
         p.rotate(tilt)
 
         # squash and stretch: along the flight when moving, else about its bottom
-        if speed > 60:
+        if self.pen:
+            pass
+        elif speed > 60:
             ang = math.degrees(math.atan2(self.vel[1], self.vel[0]))
             stretch = 1 + min(0.32, speed / 2600)
             p.rotate(ang)
@@ -297,22 +370,27 @@ class Mascot(QWidget):
             self._draw_thought(p, ink)
         p.end()
 
-    def _draw_tail(self, p, ink, tilt):
-        """From the body, a curl of ink out to a pen nib."""
-        a = self.tail_angle - math.radians(tilt)
+    def _sway(self):
+        return 0.0 if self.is_busy() or self.pen else 7 * math.sin(self.t * 3.1)
+
+    @staticmethod
+    def _tail_geometry(a, sway):
+        """The tail's curve (unscaled, about the body's centre), the nib's direction, and its tip."""
         bx, by = math.cos(a) * R * 0.9, math.sin(a) * R * 0.9
         ex, ey = math.cos(a) * (R + 30), math.sin(a) * (R + 30)
         nx, ny = -math.sin(a), math.cos(a)
-        sway = 7 * math.sin(self.t * 3.1) if not self.is_busy() else 0
         c1 = (bx + math.cos(a) * 10 + nx * (9 + sway), by + math.sin(a) * 10 + ny * (9 + sway))
         c2 = (ex - math.cos(a) * 10 - nx * (6 - sway), ey - math.sin(a) * 10 - ny * (6 - sway))
         pts = [anim.cubic((bx, by), c1, c2, (ex, ey), i / 18) for i in range(19)]
-        draw_tapered(p, pts, ink, 2.3, 0.15, 0.85)
-        # the nib, along the tail's last stretch
         dx, dy = ex - pts[-3][0], ey - pts[-3][1]
         d = math.hypot(dx, dy) or 1
         dx, dy = dx / d, dy / d
-        tip = (ex + dx * 10, ey + dy * 10)
+        return pts, (ex, ey), (dx, dy), (ex + dx * 10, ey + dy * 10)
+
+    def _draw_tail(self, p, ink, tilt):
+        """From the body, a curl of ink out to a pen nib."""
+        pts, (ex, ey), (dx, dy), tip = self._tail_geometry(self.tail_angle - math.radians(tilt), self._sway())
+        draw_tapered(p, pts, ink, 2.3, 0.15, 0.85)
         poly = QPolygonF([QPointF(ex - dy * 3.6, ey + dx * 3.6), QPointF(*tip), QPointF(ex + dy * 3.6, ey - dx * 3.6)])
         p.setPen(QPen(ink, 1.1, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         p.setBrush(ink)
@@ -328,6 +406,10 @@ class Mascot(QWidget):
             target = (cur.x(), cur.y()) if cur is not None else None
         if self.mood == "thinking":
             return 1.6, -1.8
+        if self.mood == "reading":                      # eyes running along the lines
+            return 2.0 * math.sin(self.t * 4.2), 1.2 + 0.6 * math.sin(self.t * 0.9)
+        if self.mood == "drawing":                      # watching the nib
+            return math.cos(PEN_ANGLE) * 2.0, math.sin(PEN_ANGLE) * 2.0
         if target is None:
             return 0.0, 0.0
         dx, dy = target[0] - self.pos_f[0], target[1] - self.pos_f[1]
@@ -386,6 +468,15 @@ class Mascot(QWidget):
             p.drawPath(path)
         elif self.mood == "puzzled":
             p.drawLine(QPointF(mx - 3.5, my + 0.6), QPointF(mx + 3.5, my - 0.6))
+        elif self.mood == "drawing":                    # concentrating: tongue out at the corner
+            path = QPainterPath(QPointF(mx - 4.0, my))
+            path.quadTo(QPointF(mx, my + 1.6), QPointF(mx + 4.0, my - 0.4))
+            p.drawPath(path)
+            tongue = QColor("#ff7aa2")
+            p.setPen(QPen(ink, 1.0))
+            p.setBrush(tongue)
+            wag = 0.6 * math.sin(self.t * 9)
+            p.drawEllipse(QPointF(mx + 2.6 + wag, my + 2.2), 1.9, 2.4)
         else:
             wide = 6.5 if happy else 5.0
             path = QPainterPath(QPointF(mx - wide, my - 1.2))
@@ -421,12 +512,41 @@ class InkLayer(QWidget):
         self.taps = []         # (x, y, start)
         self.sparkles = []     # (x, y, vx, vy, start, size)
         self.captions = []     # {"text", "rect", "start", "fade"}
+        self.wet = []          # strokes being drawn: {"pts", "color", "width", "fade", "flat"}
+        self.wet_text = []     # text being written: {"text", "rect", "font", "color", "shown", "fade"}
         self._dirty = QRect()
         self.caption_font = QFont("Caveat")
         self.caption_font.setPixelSize(22)
 
     def busy(self):
-        return bool(self.trail or self.circles or self.taps or self.sparkles or self.captions)
+        return bool(self.trail or self.circles or self.taps or self.sparkles or self.captions or self.wet
+                    or self.wet_text)
+
+    # ---- ink going onto the paper, before it's really there
+    def begin_wet(self, color, width, alpha=1.0, flat=False):
+        c = QColor(color)
+        c.setAlphaF(alpha)
+        self.wet.append({"pts": [], "color": c, "width": max(0.8, width), "fade": None, "flat": flat})
+
+    def wet_point(self, x, y):
+        if self.wet and self.wet[-1]["fade"] is None:
+            pts = self.wet[-1]["pts"]
+            if not pts or abs(pts[-1][0] - x) + abs(pts[-1][1] - y) > 0.6:
+                pts.append((x, y))
+
+    def begin_wet_text(self, text, rect: QRectF, font, color):
+        self.wet_text.append({"text": text, "rect": rect, "font": font, "color": QColor(color), "shown": 0,
+                              "fade": None})
+
+    def set_wet_text_shown(self, n):
+        if self.wet_text:
+            self.wet_text[-1]["shown"] = n
+
+    def dry(self):
+        """The ink is on the paper now: the wet copy fades away."""
+        for item in self.wet + self.wet_text:
+            if item["fade"] is None:
+                item["fade"] = self.t
 
     def caption(self, text, near: QRectF, avoid=None):
         """Write `text` beside `near` by hand (written left to right), inside the window and clear of
@@ -483,6 +603,8 @@ class InkLayer(QWidget):
         self.taps = [tp for tp in self.taps if t - tp[2] < 0.55]
         self.sparkles = [s for s in self.sparkles if t - s[4] < 0.9]
         self.captions = [c for c in self.captions if c["fade"] is None or t - c["fade"] < 0.4]
+        self.wet = [w for w in self.wet if w["fade"] is None or t - w["fade"] < 0.35]
+        self.wet_text = [w for w in self.wet_text if w["fade"] is None or t - w["fade"] < 0.35]
         box = self._bounds()
         dirty = box.united(self._dirty)
         self._dirty = box
@@ -505,9 +627,14 @@ class InkLayer(QWidget):
         for x, y, vx, vy, _s, _z in self.sparkles:
             xs += [x, x + vx]
             ys += [y, y + vy + 30]
-        for c in self.captions:
+        for c in self.captions + self.wet_text:
             xs += [c["rect"].left(), c["rect"].right()]
             ys += [c["rect"].top(), c["rect"].bottom()]
+        for w in self.wet:
+            if w["pts"]:
+                pad = w["width"]
+                xs += [min(x for x, _ in w["pts"]) - pad, max(x for x, _ in w["pts"]) + pad]
+                ys += [min(y for _, y in w["pts"]) - pad, max(y for _, y in w["pts"]) + pad]
         if not xs:
             return QRect()
         return QRect(int(min(xs)) - 14, int(min(ys)) - 14, int(max(xs) - min(xs)) + 28, int(max(ys) - min(ys)) + 28)
@@ -554,6 +681,26 @@ class InkLayer(QWidget):
                 r0, r1 = 12 + 10 * e, 16 + 16 * e
                 p.drawLine(QPointF(x + math.cos(a) * r0, y + math.sin(a) * r0),
                            QPointF(x + math.cos(a) * r1, y + math.sin(a) * r1))
+        # wet ink: one smooth path per stroke (so see-through ink, like a highlighter, stays even)
+        for w in self.wet:
+            if len(w["pts"]) < 2:
+                continue
+            col = QColor(w["color"])
+            if w["fade"] is not None:
+                col.setAlphaF(col.alphaF() * max(0.0, 1 - (t - w["fade"]) / 0.35))
+            path = QPainterPath(QPointF(*w["pts"][0]))
+            for x, y in w["pts"][1:]:
+                path.lineTo(x, y)
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(col, w["width"], Qt.SolidLine, Qt.FlatCap if w["flat"] else Qt.RoundCap, Qt.RoundJoin))
+            p.drawPath(path)
+        for w in self.wet_text:
+            col = QColor(w["color"])
+            if w["fade"] is not None:
+                col.setAlphaF(max(0.0, 1 - (t - w["fade"]) / 0.35))
+            p.setFont(w["font"])
+            p.setPen(col)
+            p.drawText(w["rect"], Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, w["text"][:int(w["shown"])])
         # captions, written on left to right
         p.setFont(self.caption_font)
         for c in self.captions:
@@ -648,13 +795,17 @@ class Animator(QObject):
         if not self.mascot.isVisible():
             return
         t = anim.now()
+        tracing = self.mascot.tracing is not None
         self.mascot.step(t)
         if self.hit is not None:
             self.hit.follow(self.mascot.pos_f[0], self.mascot.pos_f[1] + self.mascot._bob())
-        if self.mascot.flight is not None:
+        if tracing:                                          # the nib is on the paper: wet ink, no trail
+            self.ink.wet_point(*self.mascot.nib_pos())       # (including where the stroke ends)
+        elif self.mascot.flight is not None:
             self.ink.add_trail_point(*self.mascot.nib_pos())
         self.ink.step(t)
-        fast = self.mascot.is_busy() or self.ink.busy() or self.mascot.mood != "idle" or self.mascot.hover
+        fast = (self.mascot.is_busy() or self.ink.busy() or self.mascot.mood != "idle" or self.mascot.hover
+                or self.mascot.pen)
         want = 16 if fast else 33
         if self.timer.interval() != want:
             self.timer.setInterval(want)

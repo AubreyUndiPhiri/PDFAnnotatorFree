@@ -35,6 +35,7 @@ def win(app, tmp_path, monkeypatch):
     monkeypatch.setattr(anim, "SPEED", 25.0)
     monkeypatch.setattr(brain, "KEY_FILE", tmp_path / "key.bin")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
     w = MainWindow()
     w.resize(1200, 800)
     w.show()
@@ -243,7 +244,7 @@ def test_claude_clicks_then_answers(app, win):
     seen = []
     cat = catalog.Catalog(win)
     pen_id = next(c.id for c in cat.commands if c.action is win.tool_actions[win.Tool.INK])
-    a.claude = _claude_with([
+    a.provider = _claude_with([
         _message([{"type": "text", "text": "On it!"},
                   {"type": "tool_use", "id": "toolu_1", "name": "click",
                    "input": {"target": pen_id, "note": "your pen"}}], "tool_use"),
@@ -258,10 +259,12 @@ def test_claude_clicks_then_answers(app, win):
     body = first["body"]
     assert body["model"] == "claude-opus-5-5" and body["fallbacks"] == "default"
     assert "server-side-fallback-2026-07-01" in first["headers"].get("anthropic-beta", "")
-    assert body["output_config"] == {"effort": "low"}
+    assert body["output_config"] == {"effort": "medium"}
     assert body["system"][0]["cache_control"] == {"type": "ephemeral"}
     assert "file/convert_to_word: File > Convert to Word" in body["system"][0]["text"]
-    assert {t["name"] for t in body["tools"]} == {"point_at", "click"} and all(t["strict"] for t in body["tools"])
+    names = {t["name"] for t in body["tools"]}
+    assert names == {"point_at", "click", "read_page", "go_to_page", "mark_text", "write_text", "draw", "shape"}
+    assert all(t.get("strict") for t in body["tools"] if t["name"] in ("point_at", "click", "read_page"))
     question = body["messages"][0]["content"]
     assert "I want to draw" in question and "<mode>do it</mode>" in question and "Open tabs:" in question
     result = second["body"]["messages"][-1]["content"][0]
@@ -274,7 +277,7 @@ def test_claude_clicks_then_answers(app, win):
 def test_claude_show_me_never_clicks(app, win):
     a = win.aupedia
     seen = []
-    a.claude = _claude_with([
+    a.provider = _claude_with([
         _message([{"type": "tool_use", "id": "toolu_9", "name": "click",
                    "input": {"target": "file/close_all", "note": "x"}}], "tool_use"),
         _message([{"type": "text", "text": "It's under **File > Close All**."}], "end_turn"),
@@ -291,7 +294,7 @@ def test_claude_show_me_never_clicks(app, win):
 def test_claude_reads_the_dialog_it_opened(app, win):
     a = win.aupedia
     seen = []
-    a.claude = _claude_with([
+    a.provider = _claude_with([
         _message([{"type": "tool_use", "id": "toolu_2", "name": "click",
                    "input": {"target": "file/properties", "note": "properties"}}], "tool_use"),
         _message([{"type": "text", "text": "Type the title in the **Title** box, then **Save**."}], "end_turn"),
@@ -310,7 +313,7 @@ def test_claude_reads_the_dialog_it_opened(app, win):
 
 def test_claude_bad_key_and_unknown_ids(app, win):
     a = win.aupedia
-    a.claude = _claude_with([(401, {"type": "error", "error": {"type": "authentication_error",
+    a.provider = _claude_with([(401, {"type": "error", "error": {"type": "authentication_error",
                                                                  "message": "invalid x-api-key"}})], [])
     a.open_bubble()
     a.ask("hello", "do")
@@ -318,7 +321,7 @@ def test_claude_bad_key_and_unknown_ids(app, win):
     assert a.history == []
 
     seen = []
-    a.claude = _claude_with([
+    a.provider = _claude_with([
         _message([{"type": "tool_use", "id": "toolu_3", "name": "point_at",
                    "input": {"target": "file/teleport", "note": "?"}}], "tool_use"),
         _message([{"type": "text", "text": "Sorry, the app can't teleport."}], "end_turn"),
@@ -331,7 +334,7 @@ def test_claude_bad_key_and_unknown_ids(app, win):
 
 def test_claude_refusal_is_not_kept(app, win):
     a = win.aupedia
-    a.claude = _claude_with([_message([], "refusal")], [])
+    a.provider = _claude_with([_message([], "refusal")], [])
     a.open_bubble()
     a.ask("something odd", "do")
     assert wait(app, lambda: done_talking(win) and "not something I can help with" in bubble_text(win), 15)

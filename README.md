@@ -190,13 +190,33 @@ to Word" or "make it dark", and pick:
 
 Drag the scribble to give it a new corner; Help > Show AUPedia hides it.
 
-On its own, AUPedia finds buttons by their names. With a **Claude API key**
-(AUPedia Settings, the gear in its bubble; get one at console.anthropic.com),
-it answers any question about the app from this guide and does multi-step
-jobs. The key is your own and stored encrypted for your Windows account;
-each question costs a little on your Claude account. Questions, the list of
-menus, and what's open (file names, page, tool) are sent to Anthropic; your
-documents' contents are not. The code is in `app/pdfannotator/aupedia/`.
+**On the paper.** AUPedia can also work on the open PDF itself, holding its
+nib like a pen: it **reads** pages ("summarise this page", "what's the
+deposit?"), **marks text** (highlights, underlines, strikes out or circles
+words), **writes** notes and answers in its handwriting (or in print), and
+**draws**: freehand doodles, ticks and stars, plus rectangles, ellipses,
+lines and arrows. You watch it fly to the spot and draw or write it, then it
+becomes a normal annotation: move it, edit it, or take it back with Undo.
+Only in **Do it for me**; **Show me** never changes the paper.
+
+**Its brain.** On its own, AUPedia finds buttons by their names and can
+highlight, underline, strike out or circle words you name ("highlight
+'monthly rent'"). For everything else, give it an AI in AUPedia Settings
+(the gear in its bubble) and choose the model:
+
+- **Claude** (Anthropic): an API key from console.anthropic.com; Claude Opus
+  5.5 (recommended), Sonnet 5.5, Haiku 4.5 or Fable 5.1. Claude can also see
+  a picture of each page it reads.
+- **Hugging Face**: a fine-grained access token with "Make calls to
+  Inference Providers" (huggingface.co/settings/tokens); pick a model from
+  the live list of models that can use tools (**Refresh List**; 👁 marks the
+  ones that can see pictures of pages), or type any model id.
+
+Keys are your own and stored encrypted for your Windows account; each
+question costs a little on that account. Questions, the list of menus, and
+what's open (file names, page, tool) go to the service you choose. When
+AUPedia reads or marks up a page, that page's text (and a picture of it, for
+models that can see) goes too. The code is in `app/pdfannotator/aupedia/`.
 
 ## Signatures
 
