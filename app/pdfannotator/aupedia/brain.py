@@ -325,29 +325,137 @@ def guide_text():
     return "(The guide isn't available.)"
 
 
-LEAN_PERSONA = """You are AUPedea, the friendly scribble helper inside AUPedean Annotator, a PDF app. Help the \
-person by using your tools: point_at shows a command, click presses it; read_page reads the open PDF (text with \
-line boxes in points, x right and y down from the top-left); mark_text, write_text, draw and shape change the page; \
-go_to_page turns pages. In "show me" mode only point and explain; in "do it" mode do the job. Use only command ids \
-from the list. Read a page before marking it. If a question was spoken (<input>spoken</input>), allow for \
-misheard words, and ask one short question if you're unsure. Reply in a sentence or two, warmly."""
+# A small model on this computer can't pick from 130 commands (measured with qwen3:1.7b: it named the wrong one,
+# or used an id as a tool name, which Ollama drops). So the word finder shortlists a few for each question, and
+# the instructions say exactly how a tool is called. No example ids in them: a small model copies those.
+LEAN_PERSONA = """You are AUPedea, the friendly helper inside AUPedean Annotator, a PDF app.
 
-LEAN_NOTE = """Note: you're a small model running on this computer, so keep to what you can do well: one job at a \
-time, a few tool calls, short replies. Use only ids from the list below. There's no guide here: if asked how something works and you're not sure, point at the menu that has it rather than guessing."""
+Your tools (these are the only tool names): point_at, click, read_page, go_to_page, mark_text, write_text, draw, shape.
+- To show where a command is, call the point_at tool with its command id as the target.
+- To press a command, call the click tool with its command id as the target (only in "do it" mode).
+- A command id is never a tool name: use it only as the target.
+- Use only command ids listed under <commands> in the message. If none fits, say so in a sentence.
+- In "show me" mode, point_at the command, then say where it is. In "do it" mode, click it, then say what you did.
+- To change the page (highlight, underline, write, draw), read_page first, then mark_text, write_text, draw or shape.
+- If the question was spoken (<input>spoken</input>), allow for misheard words.
+After using tools, reply in one or two short, warm sentences."""
+LEAN_SHORTLIST = 6                 # commands offered to a small model for each question
 
 
 def system_prompt(catalog, lean=False):
     """Stable between questions (the command list and the guide), so it's cached. Lean (for a small model on
-    this computer, where every token is read by a laptop's processor): a shorter command list and no guide."""
+    this computer, where every token is read by a laptop's processor): just how to use the tools; the commands
+    that might fit come with each question (lean_commands)."""
     if lean:
-        return LEAN_PERSONA + "\n\n" + LEAN_NOTE + "\n\n# Commands (id: where it is)\n" + catalog.describe(compact=True)
+        return LEAN_PERSONA
     return (PERSONA + "\n\n# Commands (id: where it is [shortcut] - what it does)\n" + catalog.describe()
             + "\n\n# The guide\n" + guide_text())
 
 
-def user_turn(question, mode, state, spoken=False):
+NO_COMMANDS = "(none match: answer in words, or use the page tools)"
+
+
+def shortlist(catalog, question):
+    """The few commands whose words match the question, for a small model to choose from."""
+    return catalog_mod.find(catalog, question, LEAN_SHORTLIST)
+
+
+def lean_commands(commands):
+    """The shortlist as the model reads it ("" if it's empty)."""
+    lines = []
+    for cmd in commands:
+        note = (" (greyed out)" if not cmd.action.isEnabled()
+                else " (on now)" if cmd.action.isCheckable() and cmd.action.isChecked() else "")
+        lines.append(f"{cmd.id}: {cmd.where()}{note}")
+    return "\n".join(lines)
+
+
+def user_turn(question, mode, state, spoken=False, commands=None):
     return (question.strip() + "\n\n<mode>" + ("do it" if mode == "do" else "show me") + "</mode>\n"
-            + ("<input>spoken</input>\n" if spoken else "") + "<app_state>\n" + state + "\n</app_state>")
+            + ("<input>spoken</input>\n" if spoken else "")
+            + ("<commands>\n" + commands + "\n</commands>\n" if commands is not None else "")
+            + "<app_state>\n" + state + "\n</app_state>")
+
+
+# shown to a small model before each question: one call done right teaches it more than any instruction
+LEAN_EXAMPLE = [
+    {"role": "user", "content": user_turn("Where is undo?", "show", "Current tool: select",
+                                          commands="edit/undo: Edit > Undo\nedit/redo: Edit > Redo")},
+    {"role": "assistant", "content": "",
+     "tool_calls": [{"function": {"name": "point_at", "arguments": {"target": "edit/undo", "note": "Undo"}}}]},
+    {"role": "tool", "tool_name": "point_at", "content": "Pointed at Edit > Undo."},
+    {"role": "assistant", "content": "It's **Edit > Undo** (or press Ctrl+Z)."},
+]
+_CALL_LINE = re.compile(r"^\W*(?:point_at|click|read_page|go_to_page|mark_text|write_text|draw|shape)\b(?=.*[/(=])"
+                        r"[\s(:]*[\w/\"'=,. ]*\)?\s*$", re.I | re.M)       # "point_at view/zoom_in", "click(target=...)"
+_BOX = re.compile(r"\[-?\d+(?:\.\d+)?(?:,\s*-?\d+(?:\.\d+)?){3}\]\s*")      # read_page's line boxes, repeated
+_STATE_ECHO = re.compile(r"\s*(?:Now: )?Open tabs:[\s\S]*$")                 # the app's state, repeated
+_TURN_ON = re.compile(r"\b(turn on|switch on|enable|show|use)\b", re.I)
+_TURN_OFF = re.compile(r"\b(turn off|switch off|disable|hide|stop)\b", re.I)
+
+
+def tidy(catalog, text):
+    """A small model's reply as the person should see it: tool calls it wrote out as text taken out,
+    and command ids turned into where they are."""
+    text = _CALL_LINE.sub("", text)
+    text = _BOX.sub("", _STATE_ECHO.sub("", text))
+    for cmd in sorted(catalog.commands, key=lambda c: -len(c.id)):
+        text = re.sub(rf"(?<![\w/])(?:\w+/)?{re.escape(cmd.id)}(?![\w/])", f"**{cmd.where()}**", text)
+    return re.sub(r"\*\*\*\*", "**", re.sub(r"\n{3,}", "\n\n", text)).strip()
+
+
+_CLAIM = re.compile(r"\b(highlighted|underlined|circled|struck|crossed out|marked|wrote|written|drew|drawn|"
+                    r"added (?:a|the) (?:note|box|circle|line|arrow))\b", re.I)
+
+
+def lean_shortcut(catalog, question, mode):
+    """For a small model: "highlight/underline/circle <words>" is done by the word finder, which marks the
+    exact words reliably (the model tends to leave the words out, then say it's done). None otherwise."""
+    return local_answer(catalog, question, mode) if _MARK.match(question) else None
+
+
+def honest(text, changed):
+    """A small model's last word, unless it says it marked up the page when nothing on it changed."""
+    if changed or not _CLAIM.search(text):
+        return text
+    return ("I couldn't mark that up, sorry. Tell me the exact words, like **highlight 500 dollars**, or try "
+            "the pen tools yourself.")
+
+
+def recover(catalog, question, mode, text):
+    """[(op, ...)] for the director (as local_answer) when a small model answered in words instead of calling
+    a tool: the shortlisted command its reply names is pointed at or pressed, as it meant to; when it gave
+    nothing useful, the word finder answers instead."""
+    candidates = shortlist(catalog, question)
+    named = []
+    for cmd in candidates:
+        hits = [m.start() for pat in (rf"(?<!\w){re.escape(cmd.id)}(?!\w)", re.escape(cmd.where()))
+                for m in [re.search(pat, text, re.I)] if m]
+        if hits:
+            named.append((min(hits), -len(cmd.where()), cmd))
+    said = tidy(catalog, text)
+    if not named:
+        return [("say", said)] if said else local_answer(catalog, question, mode)
+    cmd = min(named, key=lambda n: n[:2])[2]
+    said = re.sub(r"^(?:pointed at|pointing at|point at)\s+", "It's ", said, flags=re.I)
+    if mode == "do":
+        said = re.sub(r"^(?:clicked|click|pressed|press)\s+", "Done: ", said, flags=re.I)
+    ops = []
+    if not cmd.action.isEnabled():
+        ops.append(("point", cmd, "greyed out for now"))
+        said = said or f"That's **{cmd.where()}**, but it's greyed out right now."
+    elif mode == "do" and cmd.action.isCheckable() and (
+            (cmd.action.isChecked() and _TURN_ON.search(question) and not _TURN_OFF.search(question))
+            or (not cmd.action.isChecked() and _TURN_OFF.search(question))):
+        ops.append(("point", cmd, cmd.label))           # already the way they want it: pressing would undo it
+        said = f"**{cmd.where()}** is already " + ("on." if cmd.action.isChecked() else "off.")
+    elif mode == "do":
+        ops.append(("click", cmd, cmd.label))
+        said = said or f"Done: **{cmd.where()}**."
+    else:
+        ops.append(("point", cmd, cmd.label))
+        said = said or f"It's **{cmd.where()}**" + (f" (shortcut **{cmd.keys}**)." if cmd.keys else ".")
+    return ops + [("say", said)]
 
 
 # ---------------------------------------------------------------------------
@@ -577,9 +685,11 @@ class Ollama:
         return {"num_ctx": OLLAMA_CONTEXT, "temperature": 0.3}
 
     def warm_up(self):
-        """Load the model into memory now, so the first question doesn't wait for it."""
-        self._req("POST", "/api/generate", {"model": self.model, "keep_alive": "30m", "options": self._options()},
-                  timeout=300)
+        """Load the model into memory now, and have it read the instructions, tools and example (which every
+        question starts with, and Ollama keeps), so the first question doesn't wait for either."""
+        body = self._body(LEAN_PERSONA, list(LEAN_EXAMPLE))
+        body["options"] = {**body["options"], "num_predict": 1}
+        self._req("POST", "/api/chat", body, timeout=600)
 
     def memory_tight(self):
         """True when this computer hasn't the free memory the model needs (so it'll crawl)."""
@@ -593,7 +703,7 @@ class Ollama:
         except (Offline, ApiError, ValueError):
             return False
 
-    def call(self, system, conversation):
+    def _body(self, system, conversation):
         body = {"model": self.model, "stream": False, "keep_alive": "30m",
                 "messages": [{"role": "system", "content": system}] + conversation,
                 "tools": [{"type": "function", "function": {"name": t["name"], "description": t["description"],
@@ -601,6 +711,10 @@ class Ollama:
                 "options": self._options()}
         if "thinking" in self.capabilities():
             body["think"] = False    # thinking out loud takes minutes on a laptop's processor
+        return body
+
+    def call(self, system, conversation):
+        body = self._body(system, conversation)
         try:
             data = self._req("POST", "/api/chat", body, timeout=900)
         except Offline:

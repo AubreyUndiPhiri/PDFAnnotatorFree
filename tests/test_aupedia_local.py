@@ -97,8 +97,67 @@ def test_a_lean_prompt_for_a_small_model(win):
     cat = catalog.Catalog(win)
     full, lean = brain.system_prompt(cat), brain.system_prompt(cat, lean=True)
     assert "# The guide" in full and "# The guide" not in lean                 # the long guide stays out
-    assert "file/convert_to_word: File > Convert to Word" in lean and " - Convert the PDF" not in lean
-    assert len(lean) < len(full) / 3 and "small model" in lean
+    assert "file/convert_to_word" not in lean and len(lean) < 1500            # no list of 130 commands to get lost in
+    assert "only tool names" in lean and "never a tool name" in lean
+    found = brain.shortlist(cat, "convert this to word")
+    assert found[0].id == "file/convert_to_word" and len(found) <= brain.LEAN_SHORTLIST
+    assert "file/convert_to_word: File > Convert to Word" in brain.lean_commands(found)
+    assert brain.lean_commands(brain.shortlist(cat, "hello, who are you?")) == ""
+    turn = brain.user_turn("convert this to word", "show", "state", commands=brain.lean_commands(found))
+    assert "<commands>\nfile/convert_to_word: File > Convert to Word" in turn
+
+
+def test_a_small_model_that_answers_in_words_still_gets_it_done(win):
+    """Measured with qwen3:1.7b: it often writes the call out ("point_at view/zoom_in") or says "Pointed at
+    View > Zoom In." without calling anything, or gives nothing at all (an id used as a tool name, which
+    Ollama drops)."""
+    cat = catalog.Catalog(win)
+    ops = brain.recover(cat, "How do I highlight text?", "show", "Pointed at Tools > Highlight.")
+    assert ops[0][0] == "point" and ops[0][1].id == "tools/highlight" and ops[-1] == ("say", "It's Tools > Highlight.")
+    ops = brain.recover(cat, "Save the file", "do", "clicked file/save")
+    assert ops[0][0] == "click" and ops[0][1].id == "file/save" and ops[-1] == ("say", "Done: **File > Save**")
+    ops = brain.recover(cat, "Zoom in", "do", "point_at view/zoom_in")                  # a call written out
+    assert ops[0][0] == "click" and ops[0][1].id == "view/zoom_in" and "point_at" not in ops[-1][1]
+    ops = brain.recover(cat, "convert this to word", "show", "")                       # nothing: the finder answers
+    assert ops[0][0] == "point" and ops[0][1].id == "file/convert_to_word"
+    ops = brain.recover(cat, "Save the file", "do", "Sure! Edit > Redo will do it.")   # not on its shortlist
+    assert all(op[0] == "say" for op in ops)
+    dark = cat.get("view/dark_mode")
+    if not dark.action.isChecked():
+        ops = brain.recover(cat, "turn off dark mode", "do", "click view/dark_mode")    # already off: not pressed
+        assert ops[0][0] == "point" and "already off" in ops[-1][1]
+    assert brain.tidy(cat, "Read it.\n[72,127,215,144] Monthly rent\nNow: Open tabs: [a.pdf]") == "Read it.\nMonthly rent"
+
+
+def test_a_small_model_doesnt_claim_what_it_didnt_do():
+    assert "couldn't mark that up" in brain.honest('The word "rent" was highlighted.', changed=False)
+    assert brain.honest('The word "rent" was highlighted.', changed=True) == 'The word "rent" was highlighted.'
+    assert brain.honest("It's under Tools > Highlight.", changed=False) == "It's under Tools > Highlight."
+
+
+def test_a_small_model_leaves_plain_markup_to_the_word_finder(app, win):
+    a = win.aupedia
+    fake = FakeOllama()
+    a.provider = brain.Ollama("qwen3:1.7b", transport=fake)
+    a.open_bubble()
+    a.ask("highlight 500 dollars", "do")
+    assert wait(app, lambda: done_talking(win) and "Marked" in bubble_text(win), 20)
+    assert [x.type[1] for x in win.current_tab().document.page(0).annots()] == ["Highlight"]
+    assert fake.chat_bodies() == []                                          # quick, and the words are exact
+
+
+def test_a_small_model_only_presses_what_was_shortlisted(app, win):
+    a = win.aupedia
+    fake = FakeOllama([said("", [("click", {"target": "edit/redo", "note": "Redo"})]), said("Done.")])
+    a.provider = brain.Ollama("qwen3:1.7b", transport=fake)
+    pressed = []
+    a.press = lambda gen, cmd, note, then: (pressed.append(cmd.id), then("Clicked."))
+    a.open_bubble()
+    a.ask("Save the file", "do")
+    assert wait(app, lambda: done_talking(win) and len(fake.chat_bodies()) == 2, 20)
+    first, second = fake.chat_bodies()
+    assert first["messages"][1:5] == brain.LEAN_EXAMPLE and "<commands>\nfile/save" in first["messages"][-1]["content"]
+    assert pressed == [] and "isn't one of the commands listed" in second["messages"][-1]["content"]
 
 
 def test_works_on_the_page_with_a_model_on_this_computer(app, win):
@@ -110,7 +169,7 @@ def test_works_on_the_page_with_a_model_on_this_computer(app, win):
     a.provider = brain.Ollama("qwen3:4b", transport=fake)
     a.open_bubble()
     assert "on this computer: qwen3:4b" in a.bubble.status.toolTip()
-    a.ask("highlight the rent", "do")
+    a.ask("mark the rent in yellow", "do")
     assert wait(app, lambda: a.mini.text.startswith("Thinking on this computer"), 5)
     assert wait(app, lambda: done_talking(win) and "Highlighted the rent" in bubble_text(win), 20)
     page = win.current_tab().document.page(0)
@@ -227,12 +286,14 @@ def test_settings_find_download_and_choose_a_local_model(app, tmp_path, monkeypa
 
 def test_warming_up_asks_for_the_same_context_as_answering():
     """A different context size makes Ollama load the whole model again: slow, and slower when memory's tight."""
-    fake = FakeOllama([said("Hi!")])
+    fake = FakeOllama([said(""), said("Hi!")])
     prov = brain.Ollama("qwen3:4b", transport=fake)
     prov.warm_up()
-    prov.call("system", [{"role": "user", "content": "hi"}])
-    warm = next(c["body"] for c in fake.calls if c["path"] == "/api/generate")
-    assert warm["options"] == fake.chat_bodies()[0]["options"] and warm["options"]["num_ctx"] == brain.OLLAMA_CONTEXT
+    prov.call(brain.LEAN_PERSONA, brain.LEAN_EXAMPLE + [{"role": "user", "content": "hi"}])
+    warm, ask = fake.chat_bodies()
+    assert warm["options"] == {**ask["options"], "num_predict": 1} and warm["options"]["num_ctx"] == brain.OLLAMA_CONTEXT
+    # ...and it reads what every question starts with (instructions, tools, example), so the first is quick too
+    assert ask["messages"][:len(warm["messages"])] == warm["messages"] and warm["tools"] == ask["tools"]
 
 
 def test_small_models_get_slim_tools():

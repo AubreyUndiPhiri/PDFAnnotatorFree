@@ -39,6 +39,9 @@ class Aupedia(QObject):
         super().__init__(window)
         self.window = window
         self.own_actions = list(own_actions)
+        self.question = ""               # the one being answered
+        self.paper_changed = False       # whether the AI has marked up the page while answering it
+        self.allowed = None              # the command ids a small model may use for it (None: any)
         self.ink = InkLayer(window)
         self.mascot = Mascot(window)
         self.hit = HitArea(window)
@@ -326,11 +329,27 @@ class Aupedia(QObject):
         prov = self._provider()
         if prov is not None:
             lean = getattr(prov, "lean", False)       # a small model on this computer: each question starts afresh
+            shortcut = brain.lean_shortcut(self.catalog, text, mode) if lean else None
+            if shortcut:
+                self._run_local(gen, shortcut)
+                return
+            self.paper_changed = False
+            self.allowed = None
             if lean or self.history_owner != (prov.kind, prov.model) or len(self.history) > brain.MAX_HISTORY:
                 self.history = []          # a new service or model, or a long talk: start afresh
                 self.history_owner = (prov.kind, prov.model)
             working = list(self.history)
-            prov.add_user(working, brain.user_turn(text, mode, self.catalog.state(), spoken))
+            if lean:                        # a few commands that might fit, not all of them: a small model gets lost
+                found = brain.shortlist(self.catalog, text)
+                self.allowed = {c.id for c in found}
+                commands = brain.lean_commands(found)
+                if commands:                # how a call is done (with nothing to call, it'd copy it regardless)
+                    working += brain.LEAN_EXAMPLE
+                prov.add_user(working, brain.user_turn(text, mode, self.catalog.state(brief=True), spoken,
+                                                       commands or brain.NO_COMMANDS))
+            else:
+                prov.add_user(working, brain.user_turn(text, mode, self.catalog.state(), spoken))
+            self.question = text
             if lean:
                 tight = prov.memory_tight()
                 self.mini.say("Thinking on this computer... memory's tight, so this will be slow: closing other "
@@ -389,6 +408,14 @@ class Aupedia(QObject):
             b.say(text, instant=True)
             self.mini.say(text)
 
+    def _thinking_tip(self, prov):
+        """Once: the cure for a model that reasons out loud before every answer."""
+        if not getattr(prov, "thinks_anyway", False) or getattr(self, "_told_thinking", False):
+            return None
+        self._told_thinking = True
+        return (f"(Tip: {prov.model} thinks out loud before every answer, which is very slow on a laptop. "
+                f"**{brain.OLLAMA_DEFAULT}** is the same size and answers straight away: download it in my settings.)")
+
     # ---- with an AI service: ask, play out the tools it calls, send back what happened, repeat
     def _request(self, gen, prov, system, working, mode, rounds):
         self.mascot.mood = "thinking"
@@ -401,16 +428,27 @@ class Aupedia(QObject):
                 self._say("Sorry, that's not something I can help with. Ask me about anything in the app!")
                 self._finish(gen, happy=False)
                 return
+            lean = getattr(prov, "lean", False)
+            if lean and rounds == 0 and reply.stop != "tool":
+                # a small model often says what it would do instead of calling the tool (or says nothing):
+                # do what it named, or let the word finder answer
+                self.history = working
+                ops = brain.recover(self.catalog, self.question, mode, "\n".join(reply.texts))
+                tip = self._thinking_tip(prov)
+                self._run_local(gen, ops + ([("say", tip)] if tip else []))
+                return
             for text in reply.texts:
+                if lean:                        # ids made readable; no "done!" for a page left as it was
+                    text = brain.tidy(self.catalog, text)
+                    if reply.stop != "tool":
+                        text = brain.honest(text, self.paper_changed)
                 self._say(text)
             if reply.stop != "tool":
                 if reply.stop == "max_tokens":
                     self._say("(I ran out of room there. Ask me to carry on.)")
-                if getattr(prov, "thinks_anyway", False) and not getattr(self, "_told_thinking", False):
-                    self._told_thinking = True
-                    self._say(f"(Tip: {prov.model} thinks out loud before every answer, which is very slow on a "
-                              f"laptop. **{brain.OLLAMA_DEFAULT}** is the same size and answers straight away: "
-                              "download it in my settings.)")
+                tip = self._thinking_tip(prov)
+                if tip:
+                    self._say(tip)
                 self.history = working          # a complete turn: keep it for follow-ups
                 self._finish(gen)
                 return
@@ -431,6 +469,8 @@ class Aupedia(QObject):
 
                 def got(text, error=False, image=None):
                     results.append(brain.Result(call_id, text, error, image))
+                    if name in brain.PAPER_TOOLS and not error:
+                        self.paper_changed = True
                     QTimer.singleShot(anim.ms(0.15), lambda: run(i + 1))
 
                 try:
@@ -480,6 +520,8 @@ class Aupedia(QObject):
         elif name == "mark_text":
             self.mark(gen, tab, index, args.get("text", ""), args.get("style", "highlight"), bool(args.get("every")),
                       args.get("color"), reply)
+        elif name == "write_text" and ("x" not in args or "y" not in args):
+            reply("Not written: give x and y (read_page shows where the words are, in points).", True)
         elif name == "write_text":
             self.write(gen, tab, index, args.get("x", 0), args.get("y", 0), args.get("text", ""),
                        args.get("size", 14), args.get("style", "handwriting") != "print", args.get("width"),
@@ -496,6 +538,10 @@ class Aupedia(QObject):
         note = str(args.get("note", ""))[:60]
         if cmd is None:
             reply(f"There's no command with the id {args.get('target')!r}. Use an id from the list.", True)
+            return
+        if self.allowed is not None and cmd.id not in self.allowed:     # a small model reaching past its shortlist
+            reply(f"{cmd.id} isn't one of the commands listed for this question. Use one from <commands>, "
+                  "or answer in words.", True)
             return
         if name == "point_at":
             self.show(gen, cmd, note, reply)

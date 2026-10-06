@@ -239,7 +239,14 @@ highlight, underline, strike out or circle words you name ("highlight
   which takes minutes on a laptop. They're slower than the online AIs and
   best at simpler, one-step jobs; AUPedea gives them short instructions
   (no guide), a 4K context, and starts each question afresh to keep them
-  light.
+  light. Instead of every menu command, a small model is shown the few
+  that match your words (about 15-25 seconds an answer with Qwen3 1.7B on
+  an 8 GB laptop). If it answers in words instead of acting ("It's View >
+  Zoom In"), AUPedea points at or presses that command for it; if it gives
+  nothing useful, the word finder answers. "Highlight / underline / circle
+  *these words*" is done straight away by the word finder (exact and
+  instant). A small model can only press commands shown to it for that
+  question, and AUPedea won't pass on a "done!" when the page didn't change.
 
   **If it's slow, it's almost always memory.** The model must fit in free
   memory (the settings show how much this computer has); when it doesn't,
