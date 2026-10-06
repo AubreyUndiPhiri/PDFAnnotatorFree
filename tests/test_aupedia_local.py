@@ -374,3 +374,32 @@ def test_reasoning_out_loud_is_kept_out_of_the_answer(app, win, monkeypatch):
     a.ask("thanks", "show")
     assert wait(app, lambda: done_talking(win) and "Sure!" in bubble_text(win), 20)
     assert bubble_text(win).count("Tip:") == 1
+
+
+def test_a_small_model_isnt_asked_again_after_pointing(app, win):
+    """Once it has pointed or pressed (and all went well), the app says so itself: asking the model to write
+    "It's under View" takes about as long again on a laptop."""
+    a = win.aupedia
+    fake = FakeOllama([said("", [("point_at", {"target": "view/zoom_in", "note": "Zoom in"})])])
+    a.provider = brain.Ollama("qwen3:1.7b", transport=fake)
+    a.open_bubble()
+    a.ask("how do I zoom in?", "show")
+    assert wait(app, lambda: done_talking(win) and "View > Zoom In" in bubble_text(win), 20)
+    assert len(fake.chat_bodies()) == 1
+    assert fake.chat_bodies()[0]["options"]["num_predict"] == brain.OLLAMA_MAX_REPLY      # no rambling
+
+
+def test_warming_up_lets_go_of_other_models():
+    """Two models at once don't fit a laptop's memory (measured: minutes an answer while qwen3:4b, chosen
+    before, was still loaded beside qwen3:1.7b)."""
+    class WithOthers(FakeOllama):
+        def __call__(self, method, url, params=None, data=None, headers=None, timeout=None):
+            if url.endswith("/api/ps"):
+                self.calls.append({"method": method, "path": "/api/ps", "body": None, "timeout": timeout})
+                return 200, {}, json.dumps({"models": [{"name": "qwen3:4b"}, {"name": "qwen3:1.7b"}]}).encode()
+            return super().__call__(method, url, params, data, headers, timeout)
+
+    fake = WithOthers([said("")])
+    brain.Ollama("qwen3:1.7b", transport=fake).warm_up()
+    unloaded = [c["body"]["model"] for c in fake.calls if c["path"] == "/api/generate" and c["body"].get("keep_alive") == 0]
+    assert unloaded == ["qwen3:4b"]

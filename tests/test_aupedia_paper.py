@@ -337,3 +337,39 @@ def test_huggingface_messages_explain_themselves():
     assert "Inference Providers" in brain.friendly_error(ApiError(403, "Forbidden"), brain.HUGGINGFACE)
     assert "can't use tools" in brain.friendly_error(
         ApiError(400, "Bad", body=b'{"error": {"message": "this model does not support tools"}}'), brain.HUGGINGFACE)
+
+
+def test_huggingface_looks_up_the_guide_and_keeps_the_talk_light(app, win):
+    """Hugging Face providers charge for every token of every request (no cheap cached prompt as with Claude):
+    the 32,000-character guide is looked up when needed instead of sent each time, and pictures and whole
+    pages aren't sent again with later questions."""
+    a = win.aupedia
+    router = FakeRouter([
+        _chat(None, [("read_page", {"page": 1})], "tool_calls"),
+        _chat("It's a lease for Sam Banda."),
+        _chat(None, [("read_guide", {"topic": "signature requests"})], "tool_calls"),
+        _chat("Use **File > Signature Requests**."),
+    ])
+    a.provider = brain.HuggingFace("hf_test", "Qwen/Qwen3.6-35B-A3B", vision=True, transport=router)
+    a.open_bubble()
+    a.ask("what is this?", "show")
+    assert wait(app, lambda: done_talking(win) and "lease for Sam Banda" in bubble_text(win), 20)
+    system = router.calls[0]["body"]["messages"][0]["content"]
+    assert "file/convert_to_word" in system and "## Signatures" not in system and "read_guide" in system
+    assert len(system) < len(brain.system_prompt(a.catalog)) / 2
+    assert "read_guide" in {t["function"]["name"] for t in router.calls[0]["body"]["tools"]}
+    a.ask("how do I ask someone to sign?", "show")
+    assert wait(app, lambda: done_talking(win) and "Signature Requests" in bubble_text(win), 20)
+    follow_up = router.calls[2]["body"]["messages"]
+    assert not any(isinstance(m.get("content"), list) for m in follow_up)          # no picture sent again
+    assert all(len(m["content"]) <= brain.KEPT_RESULT + 60 for m in follow_up if m["role"] == "tool")
+    looked_up = router.calls[3]["body"]["messages"][-1]
+    assert looked_up["role"] == "tool" and looked_up["content"].startswith("## Signatures")
+    assert len(looked_up["content"]) <= brain.GUIDE_LIMIT
+    assert router.calls[0]["body"]["max_tokens"] == 4096
+
+
+def test_the_guide_is_found_by_its_words():
+    assert brain.read_guide("Google Drive").startswith("## Google Drive")
+    assert brain.read_guide("convert to word").startswith("## Converting PDFs to Word")
+    assert "Its sections:" in brain.read_guide("zzzz qqqq")

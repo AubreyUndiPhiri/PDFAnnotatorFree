@@ -228,7 +228,13 @@ highlight, underline, strike out or circle words you name ("highlight
 - **Hugging Face**: a fine-grained access token with "Make calls to
   Inference Providers" (huggingface.co/settings/tokens); pick a model from
   the live list of models that can use tools (**Refresh List**; 👁 marks the
-  ones that can see pictures of pages), or type any model id.
+  ones that can see pictures of pages), or type any model id. Hugging Face
+  providers charge for every word of every request, and a question can take
+  a few requests (one per step), so AUPedea keeps them small: this guide
+  isn't sent along (it looks up the section it needs), and later questions
+  don't resend pictures of pages or whole pages of text. Big models cost
+  more per word; a smaller one (such as Qwen3.6 35B-A3B) makes credit last
+  much longer.
 - **On this computer** (offline, free, no key): install Ollama
   (ollama.com, **Get Ollama...** in the settings), pick a model and click
   **Download** (once). Nothing you ask leaves the computer. Small models
@@ -240,8 +246,11 @@ highlight, underline, strike out or circle words you name ("highlight
   best at simpler, one-step jobs; AUPedea gives them short instructions
   (no guide), a 4K context, and starts each question afresh to keep them
   light. Instead of every menu command, a small model is shown the few
-  that match your words (about 15-25 seconds an answer with Qwen3 1.7B on
-  an 8 GB laptop). If it answers in words instead of acting ("It's View >
+  that match your words (about 7-11 seconds an answer with Qwen3 1.7B on
+  an 8 GB laptop). Once it has pointed at or pressed a command, AUPedea
+  says so itself rather than wait for the model to write it; replies are
+  kept short; and any other model still in memory is let go when AUPedea
+  starts, since two at once don't fit. If it answers in words instead of acting ("It's View >
   Zoom In"), AUPedea points at or presses that command for it; if it gives
   nothing useful, the word finder answers. "Highlight / underline / circle
   *these words*" is done straight away by the word finder (exact and

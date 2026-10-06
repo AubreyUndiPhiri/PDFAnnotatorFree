@@ -335,7 +335,8 @@ class Aupedia(QObject):
                 return
             self.paper_changed = False
             self.allowed = None
-            if lean or self.history_owner != (prov.kind, prov.model) or len(self.history) > brain.MAX_HISTORY:
+            limit = getattr(prov, "history_limit", brain.MAX_HISTORY)
+            if lean or self.history_owner != (prov.kind, prov.model) or len(self.history) > limit:
                 self.history = []          # a new service or model, or a long talk: start afresh
                 self.history_owner = (prov.kind, prov.model)
             working = list(self.history)
@@ -355,7 +356,8 @@ class Aupedia(QObject):
                 self.mini.say("Thinking on this computer... memory's tight, so this will be slow: closing other "
                               "apps helps, or pick a smaller model in my settings." if tight
                               else "Thinking on this computer...", "status")
-            self._request(gen, prov, brain.system_prompt(self.catalog, getattr(prov, "lean", False)), working, mode, 0)
+            self._request(gen, prov, brain.system_prompt(self.catalog, lean, getattr(prov, "guide_inline", True)),
+                          working, mode, 0)
         else:
             self._run_local(gen, brain.local_answer(self.catalog, text, mode))
 
@@ -449,7 +451,8 @@ class Aupedia(QObject):
                 tip = self._thinking_tip(prov)
                 if tip:
                     self._say(tip)
-                self.history = working          # a complete turn: keep it for follow-ups
+                # a complete turn: keep it for follow-ups (lighter, for a service that charges for every token)
+                self.history = working if getattr(prov, "guide_inline", True) else brain.compact_history(working)
                 self._finish(gen)
                 return
             if rounds + 1 >= brain.MAX_ROUNDS:
@@ -463,6 +466,16 @@ class Aupedia(QObject):
                     return
                 if i == len(reply.calls):
                     prov.add_results(working, results)
+                    modal = self._modal()
+                    if lean and not any(r.error for r in results) and \
+                            all(c[1] in ("point_at", "click") for c in reply.calls):
+                        # pointed or pressed, and all went well: say so here rather than wait (about as long
+                        # again, on a laptop) for a small model to write "It's under View"
+                        self._say(brain.lean_wrapup(self.catalog, reply.calls,
+                                                    modal.windowTitle() if modal is not None else None))
+                        self.history = working
+                        self._finish(gen)
+                        return
                     self._request(gen, prov, system, working, mode, rounds + 1)
                     return
                 call_id, name, args = reply.calls[i]
@@ -499,6 +512,9 @@ class Aupedia(QObject):
             return
         if name in ("point_at", "click"):
             self._command_tool(gen, name, args, mode, reply)
+            return
+        if name == "read_guide":
+            reply(brain.read_guide(args.get("topic", "")))
             return
         if name not in ("read_page", "go_to_page") and name not in brain.PAPER_TOOLS:
             reply(f"Unknown tool {name}.", True)

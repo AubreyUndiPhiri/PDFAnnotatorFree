@@ -77,6 +77,7 @@ OLLAMA_MODELS = [
 ]
 OLLAMA_CONTEXT = 4096              # tokens the model keeps in mind: each one costs memory a laptop may not have
 OLLAMA_PAGE_TEXT = 2500            # characters of a page handed to a model on this computer
+OLLAMA_MAX_REPLY = 320             # tokens a reply may run to: a laptop writes about 10 a second
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +326,65 @@ def guide_text():
     return "(The guide isn't available.)"
 
 
+KEPT_RESULT = 600                  # characters of an old tool result kept for follow-ups
+
+
+def compact_history(conversation):
+    """A finished conversation, lighter for the next question: pictures of pages dropped and long tool results
+    (whole pages of text, guide sections) cut short. They mattered while answering; resent with every later
+    request they'd cost a lot (a picture of a page is well over a thousand tokens)."""
+    out = []
+    for msg in conversation:
+        if msg.get("role") == "user" and isinstance(msg.get("content"), list):
+            continue                                        # "Here is what the page looks like." + pictures
+        if msg.get("role") == "tool" and len(str(msg.get("content", ""))) > KEPT_RESULT:
+            msg = {**msg, "content": msg["content"][:KEPT_RESULT] + " ...(cut short; read it again if needed)"}
+        out.append(msg)
+    return out
+
+
+def guide_sections():
+    """[(title, text)]: the guide cut at its ## and ### headings."""
+    out = []
+    for part in re.split(r"(?m)^(?=#{2,3} )", guide_text()):
+        title = part.split("\n", 1)[0].lstrip("#").strip()
+        if part.startswith("#") and title:
+            out.append((title, part.strip()))
+    return out
+
+
+GUIDE_TOOL = {
+    "name": "read_guide",
+    "description": "Look up how part of the app works in its guide (the section titles are listed in the "
+                   "instructions). Returns the best-matching sections.",
+    "parameters": {"type": "object", "additionalProperties": False, "required": ["topic"], "properties": {
+        "topic": {"type": "string", "description": "A section title, or a few words about what you need."}}}}
+GUIDE_LIMIT = 6000                 # characters of the guide one look-up returns
+
+
+def read_guide(topic):
+    """The guide's sections that best match the topic (for a service without prompt caching, where sending
+    the whole 32,000-character guide with every request would cost on every request)."""
+    want = set(catalog_mod.words(str(topic), expand=True))
+    scored = []
+    for title, text in guide_sections():
+        in_title = set(catalog_mod.words(title))
+        in_text = set(catalog_mod.words(text))
+        score = sum(3 if w in in_title else 1 if w in in_text else 0 for w in want)
+        if str(topic).strip().lower() == title.lower():
+            score += 100
+        if score:
+            scored.append((score, title, text))
+    scored.sort(key=lambda s: -s[0])
+    out = ""
+    for _score, _title, text in scored[:2]:
+        out += text[:GUIDE_LIMIT - len(out)] + "\n\n"
+        if len(out) >= GUIDE_LIMIT:
+            break
+    titles = ", ".join(t for t, _x in guide_sections())
+    return out.strip() or f"Nothing in the guide matches {topic!r}. Its sections: {titles}."
+
+
 # A small model on this computer can't pick from 130 commands (measured with qwen3:1.7b: it named the wrong one,
 # or used an id as a tool name, which Ollama drops). So the word finder shortlists a few for each question, and
 # the instructions say exactly how a tool is called. No example ids in them: a small model copies those.
@@ -342,14 +402,18 @@ After using tools, reply in one or two short, warm sentences."""
 LEAN_SHORTLIST = 6                 # commands offered to a small model for each question
 
 
-def system_prompt(catalog, lean=False):
+def system_prompt(catalog, lean=False, guide=True):
     """Stable between questions (the command list and the guide), so it's cached. Lean (for a small model on
     this computer, where every token is read by a laptop's processor): just how to use the tools; the commands
-    that might fit come with each question (lean_commands)."""
+    that might fit come with each question (lean_commands). Without the guide (for a service that charges for
+    every token of every request): just its section titles, and read_guide to look one up."""
     if lean:
         return LEAN_PERSONA
-    return (PERSONA + "\n\n# Commands (id: where it is [shortcut] - what it does)\n" + catalog.describe()
-            + "\n\n# The guide\n" + guide_text())
+    head = PERSONA + "\n\n# Commands (id: where it is [shortcut] - what it does)\n" + catalog.describe()
+    if guide:
+        return head + "\n\n# The guide\n" + guide_text()
+    return (head + "\n\n# The guide\nIt isn't included here: call read_guide with a section title (or a few words) "
+            "to read the part you need. Sections: " + "; ".join(t for t, _x in guide_sections()) + ".")
 
 
 NO_COMMANDS = "(none match: answer in words, or use the page tools)"
@@ -420,6 +484,20 @@ def honest(text, changed):
         return text
     return ("I couldn't mark that up, sorry. Tell me the exact words, like **highlight 500 dollars**, or try "
             "the pen tools yourself.")
+
+
+def lean_wrapup(catalog, calls, dialog=None):
+    """What a small model would have said after pointing or pressing, without asking it: "It's **View >
+    Zoom In**." / "Done: **File > Save**." (and the dialog to fill in, if one opened)."""
+    said = []
+    for _id, name, args in calls:
+        cmd = catalog.get(args.get("target", ""))
+        if cmd is not None:
+            said.append((f"Done: **{cmd.where()}**." if name == "click" else
+                         f"It's **{cmd.where()}**" + (f" (shortcut **{cmd.keys}**)." if cmd.keys else ".")))
+    if dialog:
+        said.append(f"Fill in the **{dialog}** window that opened.")
+    return " ".join(dict.fromkeys(said)) or "Done."
 
 
 def recover(catalog, question, mode, text):
@@ -554,8 +632,12 @@ def _claude_tool(t):
 
 
 class HuggingFace:
-    """A chat model on Hugging Face Inference Providers (the OpenAI-style chat API, with tools)."""
+    """A chat model on Hugging Face Inference Providers (the OpenAI-style chat API, with tools). Providers there
+    charge for every token of every request (no cheap cached prompt as with Claude), and each tool round sends
+    the whole conversation again: so the guide is looked up rather than sent, and the conversation kept short."""
     kind = HUGGINGFACE
+    guide_inline = False            # read_guide instead of the whole guide in every request
+    history_limit = 24              # messages kept for follow-ups (Claude: MAX_HISTORY)
 
     def __init__(self, token, model=None, vision=False, transport=None):
         self.key = token
@@ -577,10 +659,10 @@ class HuggingFace:
 
     def call(self, system, conversation):
         data = self._post("/chat/completions", {
-            "model": self.model, "max_tokens": 8192, "tool_choice": "auto",
+            "model": self.model, "max_tokens": 4096, "tool_choice": "auto",
             "messages": [{"role": "system", "content": system}] + conversation,
             "tools": [{"type": "function", "function": {"name": t["name"], "description": t["description"],
-                                                        "parameters": t["parameters"]}} for t in TOOLS]})
+                                                        "parameters": t["parameters"]}} for t in TOOLS + [GUIDE_TOOL]]})
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
         reply = Reply()
@@ -682,11 +764,23 @@ class Ollama:
 
     def _options(self):
         # warming up and answering must ask for the same context, or Ollama loads the whole model again
-        return {"num_ctx": OLLAMA_CONTEXT, "temperature": 0.3}
+        return {"num_ctx": OLLAMA_CONTEXT, "temperature": 0.3, "num_predict": OLLAMA_MAX_REPLY}
 
     def warm_up(self):
         """Load the model into memory now, and have it read the instructions, tools and example (which every
-        question starts with, and Ollama keeps), so the first question doesn't wait for either."""
+        question starts with, and Ollama keeps), so the first question doesn't wait for either. Any other model
+        still in memory (one chosen before, kept for 30 minutes) is let go first: two at once don't fit a laptop,
+        and Windows then swaps them to the disk (measured here: minutes an answer instead of seconds)."""
+        try:
+            loaded = [m.get("name") for m in self._req("GET", "/api/ps", timeout=5).get("models", [])]
+        except (Offline, ApiError, ValueError):
+            loaded = []
+        for other in loaded:
+            if other and other not in (self.model, self.model + ":latest"):
+                try:
+                    self._req("POST", "/api/generate", {"model": other, "keep_alive": 0}, timeout=30)
+                except (Offline, ApiError, ValueError):
+                    pass
         body = self._body(LEAN_PERSONA, list(LEAN_EXAMPLE))
         body["options"] = {**body["options"], "num_predict": 1}
         self._req("POST", "/api/chat", body, timeout=600)
