@@ -270,7 +270,7 @@ class Aupedia(QObject):
         if self.bubble is not None:
             prov = self._provider()
             if prov is None:
-                self.bubble.set_status("offline finder (add a key in settings)")
+                self.bubble.set_status(brain.finder_reason())
             else:
                 if prov.kind == brain.OLLAMA:
                     self.bubble.set_status(f"thinking on this computer: {prov.label()}")

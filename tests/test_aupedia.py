@@ -98,7 +98,7 @@ def test_finder_matches_words(win, question, expected):
 def test_offline_do_it_selects_the_pen(app, win):
     a = win.aupedia
     a.open_bubble()
-    assert "offline" in a.bubble.status.text()
+    assert "built-in finder" in a.bubble.status.text()
     a.ask("pick the pen so I can draw", "do")
     assert wait(app, lambda: win.current_tool == win.Tool.INK and done_talking(win))
     assert "Done" in bubble_text(win) and "Pen" in bubble_text(win)

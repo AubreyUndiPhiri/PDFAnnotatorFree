@@ -219,8 +219,11 @@ Only in **Do it for me**; **Show me** never changes the paper.
 
 **Its brain.** On its own, AUPedea finds buttons by their names and can
 highlight, underline, strike out or circle words you name ("highlight
-'monthly rent'"). For everything else, give it an AI in AUPedea Settings
-(the gear in its bubble) and choose the model:
+'monthly rent'"). That's **Built in** in AUPedea Settings (the gear in its
+bubble): instant, free, no key. For everything else, give it an AI there
+and choose the model. An online AI chosen without its key uses the
+built-in finder (the status line says so); it never switches to the other
+service, so it can't spend credit you didn't mean it to:
 
 - **Claude** (Anthropic): an API key from console.anthropic.com; Claude Opus
   5.5 (recommended), Sonnet 5.5, Haiku 4.5 or Fable 5.1. Claude can also see

@@ -314,8 +314,18 @@ def test_settings_choose_huggingface_and_a_model(app, tmp_path, monkeypatch):
         prov = brain.make_provider()
         assert isinstance(prov, brain.Claude) and prov.model == "claude-sonnet-5-5"
         brain.forget_key(brain.CLAUDE)
-        prov = brain.make_provider()                                       # no Claude key: falls back to the other
-        assert isinstance(prov, brain.HuggingFace) and prov.model == "someone/custom-model"
+        # no Claude key: the built-in finder, never the other service (that quietly spent Hugging Face credit)
+        assert brain.make_provider() is None and brain.finder_reason() == "built-in finder (no Claude key)"
+
+        dlg = AupediaSettingsDialog(True, hf_fetch=lambda: [])
+        dlg.use_none.setChecked(True)                                      # chosen on purpose: no AI at all
+        assert not dlg.claude_box.isVisibleTo(dlg) and not dlg.hf_box.isVisibleTo(dlg)
+        assert not dlg.test_btn.isEnabled()
+        dlg.accept()
+        assert brain.choices()["provider"] == brain.BUILT_IN and brain.make_provider() is None
+        assert brain.api_key(brain.HUGGINGFACE) == "hf_secret_token"       # its token kept, just not used
+        assert brain.finder_reason() == "built-in finder (no AI)"
+        assert AupediaSettingsDialog(True, hf_fetch=lambda: []).use_none.isChecked()
     finally:
         brain.save_choices(provider=brain.CLAUDE, claude_model=brain.MODEL, hf_model=brain.HF_DEFAULT,
                            hf_vision=False)

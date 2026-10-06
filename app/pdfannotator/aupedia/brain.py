@@ -30,6 +30,7 @@ GUIDES = [_HERE.parents[2] / "README.md", _HERE.parents[3] / "README.md"]   # bu
 CLAUDE = "claude"
 HUGGINGFACE = "huggingface"
 OLLAMA = "ollama"                  # a model running on this computer (Ollama): no key, nothing leaves it
+BUILT_IN = "none"                  # no AI: the word finder finds buttons and marks text up (instant, free)
 
 CLAUDE_KEYS_URL = "https://console.anthropic.com/settings/keys"
 CLAUDE_MODELS = [
@@ -147,18 +148,26 @@ def save_choices(provider=None, claude_model=None, hf_model=None, hf_vision=None
 
 
 def make_provider():
-    """The chosen service (one on this computer needs no key), else an online one that has a key, else None."""
+    """The chosen service (one on this computer needs no key), or None for the built-in finder: when that's
+    what was chosen, or the chosen service has no key. Never another service than the one chosen (it used to
+    fall back to whichever had a key, which quietly spent Hugging Face credit with Claude chosen)."""
     c = choices()
     if c["provider"] == OLLAMA:
         return Ollama(c["local_model"], c["local_vision"])
-    order = [c["provider"], HUGGINGFACE if c["provider"] == CLAUDE else CLAUDE]
-    for kind in order:
-        key = api_key(kind)
-        if key and kind == CLAUDE:
-            return Claude(key, c["claude_model"])
-        if key and kind == HUGGINGFACE:
-            return HuggingFace(key, c["hf_model"], c["hf_vision"])
+    key = api_key(c["provider"]) if c["provider"] in (CLAUDE, HUGGINGFACE) else ""
+    if key and c["provider"] == CLAUDE:
+        return Claude(key, c["claude_model"])
+    if key and c["provider"] == HUGGINGFACE:
+        return HuggingFace(key, c["hf_model"], c["hf_vision"])
     return None
+
+
+def finder_reason():
+    """Why the built-in finder is answering: chosen, or the chosen service has no key."""
+    c = choices()["provider"]
+    if c in (CLAUDE, HUGGINGFACE):
+        return "built-in finder (no " + ("Claude key" if c == CLAUDE else "Hugging Face token") + ")"
+    return "built-in finder (no AI)"
 
 
 # ---------------------------------------------------------------------------

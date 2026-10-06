@@ -693,18 +693,22 @@ class AupediaSettingsDialog(QDialog):
         self.hf_vision = {mid: sees for mid, sees in brain.HF_MODELS}
         chosen = brain.choices()
         layout = _dialog_layout(self)
-        layout.addLayout(_header("AUPedea", "Without a key, AUPedea finds buttons and marks text up by itself. "
-                                            "With an AI it answers anything, reads your pages, writes and draws on "
-                                            "them, and does multi-step jobs. Use your own key from either service."))
+        layout.addLayout(_header("AUPedea", "Built in (no AI, no key), AUPedea finds buttons and marks text up "
+                                            "by itself, instantly. With an AI it answers anything, reads your "
+                                            "pages, writes and draws on them, and does multi-step jobs. An online "
+                                            "AI without its key uses the built-in finder, never the other service."))
 
         pick = QHBoxLayout()
         self.provider_group = QButtonGroup(self)
+        self.use_none = QRadioButton("Built in")
+        self.use_none.setToolTip("No AI and no key: finds buttons from your words and marks text up "
+                                 "(\"highlight 500 dollars\"). Instant and free")
         self.use_claude = QRadioButton("Claude (Anthropic)")
         self.use_hf = QRadioButton("Hugging Face")
         self.use_local = QRadioButton("On this computer")
         self.use_local.setToolTip("A model running on your own computer with Ollama: free, works offline, and "
                                   "nothing you ask leaves the computer")
-        for btn in (self.use_claude, self.use_hf, self.use_local):
+        for btn in (self.use_none, self.use_claude, self.use_hf, self.use_local):
             self.provider_group.addButton(btn)
             pick.addWidget(btn)
         pick.addStretch()
@@ -818,7 +822,7 @@ class AupediaSettingsDialog(QDialog):
         self.on_start = QCheckBox("Show AUPedea when the app starts")
         self.on_start.setChecked(show_on_start)
         layout.addWidget(self.on_start)
-        test = QPushButton("Test")
+        test = self.test_btn = QPushButton("Test")
         test.setToolTip("Check the key (or token) of the service chosen above")
         test.clicked.connect(self._test)
         cancel = QPushButton("Cancel")
@@ -827,8 +831,8 @@ class AupediaSettingsDialog(QDialog):
         ok.clicked.connect(self.accept)
         layout.addLayout(_button_row(cancel, ok, leading=[test]))
 
-        {brain.HUGGINGFACE: self.use_hf, brain.OLLAMA: self.use_local}.get(chosen["provider"],
-                                                                            self.use_claude).setChecked(True)
+        {brain.HUGGINGFACE: self.use_hf, brain.OLLAMA: self.use_local,
+         brain.BUILT_IN: self.use_none}.get(chosen["provider"], self.use_claude).setChecked(True)
         self.provider_group.buttonToggled.connect(lambda *_: self._show_provider())
         self._show_provider()
         self._update_hf_note()
@@ -882,11 +886,14 @@ class AupediaSettingsDialog(QDialog):
 
     # ---- the rest
     def provider(self):
+        if self.use_none.isChecked():
+            return brain.BUILT_IN
         if self.use_local.isChecked():
             return brain.OLLAMA
         return brain.HUGGINGFACE if self.use_hf.isChecked() else brain.CLAUDE
 
     def _show_provider(self):
+        self.test_btn.setEnabled(self.provider() != brain.BUILT_IN)
         self.claude_box.setVisible(self.provider() == brain.CLAUDE)
         self.hf_box.setVisible(self.provider() == brain.HUGGINGFACE)
         self.local_box.setVisible(self.provider() == brain.OLLAMA)
