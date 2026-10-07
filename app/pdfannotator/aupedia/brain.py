@@ -67,6 +67,7 @@ OLLAMA_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 if not OLLAMA_URL.startswith("http"):
     OLLAMA_URL = "http://" + OLLAMA_URL
 OLLAMA_DOWNLOAD_URL = "https://ollama.com/download/windows"
+OLLAMA_SETUP_URL = "https://ollama.com/download/OllamaSetup.exe"     # Windows installer, about 1.6 GB
 OLLAMA_DEFAULT = "qwen3:4b-instruct"
 # small models that use tools and fit an ordinary laptop (name, what it's like). Instruct models answer
 # straight away; "thinking" ones (plain qwen3:4b is one now) write pages of reasoning first: minutes on a laptop
@@ -75,6 +76,11 @@ OLLAMA_MODELS = [
     ("llama3.2:3b", "Llama 3.2 3B: about 2 GB, a little quicker"),
     ("qwen3:1.7b", "Qwen3 1.7B: about 1.4 GB, quickest, simple jobs only"),
     ("qwen3:8b", "Qwen3 8B: about 5 GB, cleverer, needs 16 GB of memory"),
+    # Google's Gemma 4 (Gemma 3 can't use tools in Ollama, so it couldn't click or mark up)
+    ("gemma4:e2b-it-qat", "Gemma 4 E2B (Google): about 4.3 GB, can see pictures of pages, needs 8 GB of memory"),
+    ("gemma4:e4b", "Gemma 4 E4B (Google): about 6.6 GB, cleverer, can see pictures of pages, needs 16 GB of memory"),
+    # OpenAI's open model: it always reasons first (told to keep that short), so it suits a fast computer
+    ("gpt-oss:20b", "gpt-oss 20B (OpenAI): about 14 GB, the cleverest here, needs 16 GB of memory or more"),
 ]
 OLLAMA_CONTEXT = 4096              # tokens the model keeps in mind: each one costs memory a laptop may not have
 OLLAMA_PAGE_TEXT = 2500            # characters of a page handed to a model on this computer
@@ -313,7 +319,14 @@ def memory_gb():
 
 
 # what each suggested model needs in memory while it answers (the model plus 4K tokens of context, roughly)
-OLLAMA_NEEDS_GB = {"qwen3:1.7b": 2.0, "llama3.2:3b": 3.0, "qwen3:4b": 3.4, "qwen3:4b-instruct": 3.4, "qwen3:8b": 6.0}
+OLLAMA_NEEDS_GB = {"qwen3:1.7b": 2.0, "llama3.2:3b": 3.0, "qwen3:4b": 3.4, "qwen3:4b-instruct": 3.4, "qwen3:8b": 6.0,
+                   "gemma4:e2b-it-qat": 5.2, "gemma4:e4b": 7.5, "gpt-oss:20b": 14.5}
+OLLAMA_THINK_LOW = 600             # extra reply tokens for gpt-oss's reasoning, which it can't switch off
+
+
+def always_thinks(model):
+    """gpt-oss reasons before every answer: Ollama ignores "think": false for it, and takes "low" instead."""
+    return (model or "").startswith("gpt-oss")
 
 
 def recommended_local_model(total_gb=None):
@@ -773,7 +786,8 @@ class Ollama:
 
     def _options(self):
         # warming up and answering must ask for the same context, or Ollama loads the whole model again
-        return {"num_ctx": OLLAMA_CONTEXT, "temperature": 0.3, "num_predict": OLLAMA_MAX_REPLY}
+        reply = OLLAMA_MAX_REPLY + (OLLAMA_THINK_LOW if always_thinks(self.model) else 0)   # reasoning counts too
+        return {"num_ctx": OLLAMA_CONTEXT, "temperature": 0.3, "num_predict": reply}
 
     def warm_up(self):
         """Load the model into memory now, and have it read the instructions, tools and example (which every
@@ -812,7 +826,9 @@ class Ollama:
                 "tools": [{"type": "function", "function": {"name": t["name"], "description": t["description"],
                                                             "parameters": t["parameters"]}} for t in lean_tools()],
                 "options": self._options()}
-        if "thinking" in self.capabilities():
+        if always_thinks(self.model):
+            body["think"] = "low"    # as little as it will do
+        elif "thinking" in self.capabilities():
             body["think"] = False    # thinking out loud takes minutes on a laptop's processor
         return body
 
@@ -918,6 +934,44 @@ def ollama_pull(model, progress=lambda fraction, status: None, url=None, open_st
         close = getattr(stream, "close", None)
         if close:
             close()
+
+
+def download_ollama_setup(progress=lambda fraction: None, folder=None, open_stream=None):
+    """Download Ollama's Windows installer (in a worker thread), reporting progress; returns its path."""
+    import tempfile
+    import urllib.error
+    import urllib.request
+
+    path = os.path.join(folder or tempfile.gettempdir(), "OllamaSetup.exe")
+    if open_stream is None:
+        def open_stream():
+            try:
+                return urllib.request.urlopen(OLLAMA_SETUP_URL, timeout=60)
+            except (urllib.error.URLError, OSError) as exc:
+                raise Offline(str(exc)) from None
+    stream = open_stream()
+    total = int(getattr(stream, "headers", {}).get("Content-Length") or 0)
+    done = 0
+    part = path + ".part"
+    try:
+        with open(part, "wb") as out:
+            while True:
+                chunk = stream.read(1 << 20)
+                if not chunk:
+                    break
+                out.write(chunk)
+                done += len(chunk)
+                progress(min(1.0, done / total) if total else None)
+    except OSError as exc:
+        raise Offline(str(exc)) from None
+    finally:
+        close = getattr(stream, "close", None)
+        if close:
+            close()
+    if total and done < total:
+        raise Offline("the download stopped part way")
+    os.replace(part, path)
+    return path
 
 
 def hf_models(transport=None):

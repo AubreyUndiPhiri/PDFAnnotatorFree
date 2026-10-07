@@ -194,6 +194,90 @@ def test_no_thinking_switch_for_models_that_dont_think():
     assert "think" not in fake.chat_bodies()[0]
 
 
+def test_gpt_oss_thinks_low_and_gemma_not_at_all():
+    """gpt-oss ignores "think": false (it always reasons), so it's asked for "low", with room in the reply for
+    that reasoning; Gemma 4 switches thinking off like Qwen."""
+    fake = FakeOllama([said("", [("point_at", {"target": "view/zoom_in"})])])
+    brain.Ollama("gpt-oss:20b", transport=fake).call("system", [{"role": "user", "content": "zoom?"}])
+    body = fake.chat_bodies()[0]
+    assert body["think"] == "low" and body["options"]["num_predict"] > brain.OLLAMA_MAX_REPLY
+    fake = FakeOllama([said("Hi!")])
+    brain.Ollama("gemma4:e2b-it-qat", transport=fake).call("system", [{"role": "user", "content": "hi"}])
+    body = fake.chat_bodies()[0]
+    assert body["think"] is False and body["options"]["num_predict"] == brain.OLLAMA_MAX_REPLY
+
+
+def test_gemma_and_gpt_models_are_offered(app, tmp_path, monkeypatch):
+    from pdfannotator.aupedia.panel import AupediaSettingsDialog
+
+    monkeypatch.setattr(brain, "KEY_FILE", tmp_path / "key.bin")
+    names = [m for m, _d in brain.OLLAMA_MODELS]
+    assert {"gemma4:e2b-it-qat", "gemma4:e4b", "gpt-oss:20b"} <= set(names)
+    assert all(m in brain.OLLAMA_NEEDS_GB for m in names)
+    try:
+        dlg = AupediaSettingsDialog(True, local_fetch=lambda: [], local_caps=lambda m: {"completion", "tools"})
+        dlg.use_local.setChecked(True)
+        assert wait(app, lambda: dlg.local_running is True)
+        labels = [dlg.local_model.itemText(i) for i in range(dlg.local_model.count())]
+        assert "gemma4:e2b-it-qat  (download, 4.3 GB)" in labels and "gpt-oss:20b  (download, 14 GB)" in labels
+        dlg.local_model.setCurrentIndex(dlg.local_model.findData("gpt-oss:20b"))
+        assert "OpenAI" in dlg.local_note.text() and "reasons a little" in dlg.local_note.text()
+        assert dlg.pull_btn.isEnabled()
+    finally:
+        brain.save_choices(provider=brain.CLAUDE, local_model=brain.OLLAMA_DEFAULT, local_vision=False)
+
+
+def test_downloading_ollamas_installer(tmp_path):
+    class Stream:
+        headers = {"Content-Length": "3000000"}
+
+        def __init__(self, size):
+            self.left = size
+
+        def read(self, n):
+            n = min(n, self.left)
+            self.left -= n
+            return b"x" * n
+
+    seen = []
+    path = brain.download_ollama_setup(seen.append, folder=str(tmp_path), open_stream=lambda: Stream(3000000))
+    assert path.endswith("OllamaSetup.exe") and os.path.getsize(path) == 3000000 and seen[-1] == 1.0
+    with pytest.raises(Offline):                      # cut off part way: no half installer left to run
+        brain.download_ollama_setup(folder=str(tmp_path / "x"), open_stream=lambda: Stream(1000))
+
+
+def test_get_ollama_installs_it_then_notices(app, tmp_path, monkeypatch):
+    from pdfannotator.aupedia.panel import AupediaSettingsDialog
+
+    monkeypatch.setattr(brain, "KEY_FILE", tmp_path / "key.bin")
+    monkeypatch.setattr(sys, "platform", "win32")
+    state = {"installed": False}
+    ran = []
+
+    def fetch():
+        if not state["installed"]:
+            raise brain.OllamaNotRunning()
+        return []
+
+    def setup_download(progress):
+        progress(0.5)
+        progress(1.0)
+        return str(tmp_path / "OllamaSetup.exe")
+
+    try:
+        dlg = AupediaSettingsDialog(True, local_fetch=fetch, setup_download=setup_download, run_setup=ran.append)
+        dlg.use_local.setChecked(True)
+        assert wait(app, lambda: dlg.local_running is False)
+        dlg.install_btn.click()
+        assert wait(app, lambda: ran == [str(tmp_path / "OllamaSetup.exe")])
+        assert "Installing Ollama" in dlg.ollama_state.text() and not dlg.install_btn.isEnabled()
+        state["installed"] = True                        # the installer finished and started Ollama
+        assert wait(app, lambda: dlg.local_running is True, 15)
+        assert "Running" in dlg.ollama_state.text() and dlg._setup_timer is None
+    finally:
+        brain.save_choices(provider=brain.CLAUDE, local_model=brain.OLLAMA_DEFAULT, local_vision=False)
+
+
 def test_says_when_it_isnt_running_or_is_too_slow(app, win):
     a = win.aupedia
     a.provider = brain.Ollama("qwen3:4b", transport=FakeOllama(running=False))
@@ -275,7 +359,7 @@ def test_settings_find_download_and_choose_a_local_model(app, tmp_path, monkeypa
         assert dlg.use_local.isChecked()                                       # it remembers the choice
         assert wait(app, lambda: dlg.local_running is False)
         assert "isn't installed" in dlg.ollama_state.text() and dlg.install_btn.isVisibleTo(dlg)
-        assert not dlg.pull_btn.isEnabled() and "Install Ollama" in dlg.local_note.text()
+        assert not dlg.pull_btn.isEnabled() and "Click Get Ollama" in dlg.local_note.text()
     finally:
         brain.save_choices(provider=brain.CLAUDE, local_model=brain.OLLAMA_DEFAULT, local_vision=False)
 

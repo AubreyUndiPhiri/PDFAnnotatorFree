@@ -4,7 +4,9 @@ speech bubble over its head (what it hears and does while the chat is
 tucked away), and its settings (which AI, key and model)."""
 import html
 import math
+import os
 import re
+import sys
 
 from PySide6.QtCore import (
     QEasingCurve, QObject, QParallelAnimationGroup, QPoint, QPointF, QPropertyAnimation, QRectF, QSize, Qt, QTimer,
@@ -667,6 +669,10 @@ class MiniBubble(QWidget):
         p.end()
 
 
+def _run_installer(path):
+    os.startfile(path)            # Ollama's own installer window; it starts Ollama when it finishes
+
+
 class _PullProgress(QObject):
     """Download progress from a worker thread, delivered on the UI thread."""
     update = Signal(object, str)
@@ -679,8 +685,11 @@ class AupediaSettingsDialog(QDialog):
     SEES = "  \U0001F441"             # marks Hugging Face models that can see pictures of pages
 
     def __init__(self, show_on_start=True, parent=None, hf_fetch=None, local_fetch=None, local_caps=None,
-                 local_pull=None):
+                 local_pull=None, setup_download=None, run_setup=None):
         super().__init__(parent)
+        self.setup_download = setup_download or brain.download_ollama_setup
+        self.run_setup = run_setup or _run_installer
+        self._setup_timer = None          # checks for Ollama while its installer runs
         self.local_fetch = local_fetch or brain.ollama_models
         self.local_caps = local_caps or (lambda model: brain.Ollama(model).capabilities())
         self.local_pull = local_pull or brain.ollama_pull
@@ -778,8 +787,9 @@ class AupediaSettingsDialog(QDialog):
         state_row = QHBoxLayout()
         state_row.addWidget(self.ollama_state, 1)
         self.install_btn = QPushButton("Get Ollama...")
-        self.install_btn.setToolTip("Ollama runs AI models on your own computer (free)")
-        self.install_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(brain.OLLAMA_DOWNLOAD_URL)))
+        self.install_btn.setToolTip("Download and install Ollama, which runs AI models on your own computer "
+                                    "(free, about 1.6 GB)")
+        self.install_btn.clicked.connect(self.install_ollama)
         state_row.addWidget(self.install_btn)
         recheck = QPushButton("Check Again")
         recheck.clicked.connect(self.check_local)
@@ -938,8 +948,9 @@ class AupediaSettingsDialog(QDialog):
         best = brain.recommended_local_model(total)
         if self.local_running is False:
             self.pull_btn.setEnabled(False)
-            self.local_note.setText("Install Ollama (free, about 1 GB), start it, then click Check Again. "
-                                    "Then pick a model and click Download.")
+            self.local_note.setText("Click Get Ollama to download and install it (free, about 1.6 GB), then "
+                                    "pick a model (Qwen, Llama, Google's Gemma or OpenAI's gpt-oss) and click "
+                                    "Download.")
             return
         installed = self._is_installed(name)
         self.pull_btn.setEnabled(bool(name) and not installed)
@@ -957,6 +968,8 @@ class AupediaSettingsDialog(QDialog):
         if name == "qwen3:4b":
             parts.append(f"Note: this one thinks out loud before every answer, which takes minutes on a laptop; "
                          f"{brain.OLLAMA_DEFAULT} is the same size and answers straight away.")
+        elif brain.always_thinks(name):
+            parts.append("It always reasons a little before answering (kept short), so each answer takes longer.")
         parts.append("Runs on this computer: nothing you ask leaves it. Slower than the online AIs, and best at "
                      "simpler jobs.")
         self.local_note.setText(" ".join(parts))
@@ -980,6 +993,7 @@ class AupediaSettingsDialog(QDialog):
 
         def done(models):
             self.local_running = True
+            self._stop_setup_checks()
             self.local_installed = {name: size for name, size in models}
             count = len(models)
             self.ollama_state.setText(f"Running, with {count} model{'s' if count != 1 else ''} downloaded."
@@ -994,6 +1008,71 @@ class AupediaSettingsDialog(QDialog):
             self._local_changed()
 
         worker.run(self.local_fetch, done, failed)
+
+    def install_ollama(self):
+        """Download Ollama's installer and start it (on Windows); elsewhere, open its download page."""
+        from ..cloud import worker
+
+        if not sys.platform.startswith("win"):
+            QDesktopServices.openUrl(QUrl(brain.OLLAMA_DOWNLOAD_URL))
+            return
+        progress = _PullProgress(self)
+        progress.update.connect(lambda f, _s: self._setup_progress(f))
+        self.install_btn.setEnabled(False)
+        self.pull_bar.setValue(0)
+        self.pull_bar.show()
+        self.ollama_state.setText("Downloading Ollama... (about 1.6 GB; you can keep using the app)")
+
+        def done(path):
+            self.pull_bar.hide()
+            try:
+                self.run_setup(path)
+            except OSError:
+                self.install_btn.setEnabled(True)
+                self.ollama_state.setText(f"Downloaded, but it wouldn't start. Run it yourself: {path}")
+                return
+            self.ollama_state.setText("Installing Ollama: follow its window. AUPedea notices when it's ready.")
+            self._start_setup_checks()
+
+        def failed(_exc):
+            self.pull_bar.hide()
+            self.install_btn.setEnabled(True)
+            self.ollama_state.setText("Couldn't download Ollama. Check the internet connection and try again, "
+                                      "or get it from ollama.com.")
+
+        worker.run(lambda: self.setup_download(lambda f: progress.update.emit(f, "")), done, failed)
+
+    def _setup_progress(self, fraction):
+        if fraction is not None:
+            self.pull_bar.setValue(int(fraction * 1000))
+            self.ollama_state.setText(f"Downloading Ollama... {int(fraction * 100)}%")
+
+    def _start_setup_checks(self):
+        self._stop_setup_checks()
+        self.install_btn.setEnabled(False)        # one installer at a time
+        self._setup_timer = QTimer(self)
+        self._setup_timer.timeout.connect(self._check_quietly)
+        self._setup_timer.start(4000)
+
+    def _stop_setup_checks(self):
+        if self._setup_timer is not None:
+            self._setup_timer.stop()
+            self._setup_timer = None
+        self.install_btn.setEnabled(True)
+
+    def _check_quietly(self):
+        """While the installer runs: has Ollama started answering yet? (Nothing changes on screen until it has.)"""
+        from ..cloud import worker
+
+        def done(models):
+            if self._setup_timer is not None:
+                self.check_local()
+
+        worker.run(self.local_fetch, done, lambda _e: None)
+
+    def done(self, result):
+        self._stop_setup_checks()
+        super().done(result)
 
     def download_local(self):
         from ..cloud import worker
