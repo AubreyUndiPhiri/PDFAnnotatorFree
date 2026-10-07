@@ -238,14 +238,20 @@ service, so it can't spend credit you didn't mean it to:
   don't resend pictures of pages or whole pages of text. Big models cost
   more per word; a smaller one (such as Qwen3.6 35B-A3B) makes credit last
   much longer.
-- **On this computer** (offline, free, no key): install Ollama
-  (ollama.com, **Get Ollama...** in the settings), pick a model and click
-  **Download** (once). Nothing you ask leaves the computer. Small models
-  suit an ordinary laptop: Qwen3 4B Instruct (`qwen3:4b-instruct`, about
-  2.5 GB), Llama 3.2 3B (about 2 GB) or Qwen3 1.7B (about 1.4 GB; the
-  settings suggest it on 8 GB computers); Qwen3 8B needs about 16 GB of
-  memory. Avoid plain `qwen3:4b`: it "thinks" out loud before every answer,
-  which takes minutes on a laptop. They're slower than the online AIs and
+- **On this computer** (offline, free, no key): click **Get Ollama...** in
+  the settings (it downloads Ollama's installer, about 1.6 GB, starts it,
+  and notices when Ollama is ready), pick a model and click **Download**
+  (once). Nothing you ask leaves the computer. Small models suit an
+  ordinary laptop: Qwen3 4B Instruct (`qwen3:4b-instruct`, about 2.5 GB),
+  Llama 3.2 3B (about 2 GB) or Qwen3 1.7B (about 1.4 GB; the settings
+  suggest it on 8 GB computers); Qwen3 8B needs about 16 GB of memory.
+  Google's Gemma 4 E2B (`gemma4:e2b-it-qat`, about 4.3 GB, sees pictures
+  of pages) fits 8 GB; Gemma 4 E4B (`gemma4:e4b`, about 6.6 GB) and
+  OpenAI's gpt-oss 20B (`gpt-oss:20b`, about 14 GB, the cleverest) want
+  16 GB or more. gpt-oss always reasons before answering; AUPedea asks it
+  to keep that short. (Gemma 3 isn't offered: in Ollama it can't use
+  tools, so it couldn't click or mark up.) Avoid plain `qwen3:4b`: it
+  "thinks" out loud before every answer, which takes minutes on a laptop. They're slower than the online AIs and
   best at simpler, one-step jobs; AUPedea gives them short instructions
   (no guide), a 4K context, and starts each question afresh to keep them
   light. Instead of every menu command, a small model is shown the few
